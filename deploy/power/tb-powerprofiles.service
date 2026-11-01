@@ -2,7 +2,11 @@
 Description=TB710FU 电源管理方案（power-profiles-daemon 兼容）
 Conflicts=power-profiles-daemon.service
 After=tb-gpu-boost.service
-Before=graphical.target
+# 必须赶在登录管理器（plasmalogin 别名 display-manager.service）之前把 D-Bus 名字
+# 注册好：PowerDevil 构造时只做一次 GetAll，抢跑一次就永远显示"不可用"。
+# WantedBy 用 graphical.target（严格晚于 multi-user）避免与 tb-gpu-boost 的
+# After=multi-user.target 成环。
+Before=display-manager.service graphical.target
 
 [Service]
 Type=dbus
@@ -13,4 +17,4 @@ RestartSec=3
 TimeoutStopSec=10
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target

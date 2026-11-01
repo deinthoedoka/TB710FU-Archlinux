@@ -10,6 +10,7 @@
 | 蜂窝网络 / GPS | 本机型无 modem |
 | Android 容器（Waydroid） | 需要内核 `CONFIG_PSI`；当前内核未开，容器会在约 16 秒后被杀 |
 | 完整 `pacman -Syu` | 会用打包版 `linux-aarch64` 覆盖自编内核，系统无法启动 |
+| `pacman -Syu` 升级 ksystemstats | 会覆盖 GPU 监控插件（`deploy/monitor/`），重跑 `deploy/monitor/deploy_monitor.sh` 重打 |
 | Steam 客户端 / QQ / 微信二进制 | 版权原因不随仓库分发，需自行下载 |
 
 ## 偶发问题

@@ -22,6 +22,13 @@ if [ -z "$(cat $G/UDC 2>/dev/null)" ]; then
   mkdir -p strings/0x409; echo TB710FU-arch > strings/0x409/product; echo tb710fu > strings/0x409/serialnumber
   mkdir -p functions/ncm.usb0 configs/c.1/strings/0x409; echo ncm > configs/c.1/strings/0x409/configuration
   [ -e configs/c.1/ncm.usb0 ] || ln -s functions/ncm.usb0 configs/c.1/
+  # MTP (uMTP-Responder over FunctionFS) rides in the same gadget. configfs
+  # cannot be changed while the UDC is bound, so add the ffs.mtp function here
+  # before binding — this is what makes MTP survive tb-usb-ncm winning the
+  # boot race. Harmless when deploy/mtp is not installed.
+  mkdir -p functions/ffs.mtp /dev/ffs-mtp
+  mountpoint -q /dev/ffs-mtp || mount -t functionfs mtp /dev/ffs-mtp 2>/dev/null || true
+  [ -e configs/c.1/ffs.mtp ] || ln -s functions/ffs.mtp configs/c.1/ffs.mtp
   echo $UDC > UDC; cd /; sleep 2
 fi
 ip addr replace 172.16.42.1/24 dev usb0; ip link set usb0 up

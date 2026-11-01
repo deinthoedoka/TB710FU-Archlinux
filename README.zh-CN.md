@@ -77,6 +77,17 @@ Android 侧（ZUXOS）保持原样，随时可以切回去。
   - `balanced`：全部放开
   - `performance`：CPU 最低频率抬到最大值 35%
 - 系统设置里的"电源管理"能真实切换（原版 PPD 在骁龙上只会显示"不可用"）。
+  服务排在 **`display-manager.service` 之前**：PowerDevil 启动时只探测一次方案、
+  从不重试，必须让它输掉开机竞速。
+
+### 视频
+
+- 硬解全链路打通：`iris` VPU 是**有状态**解码器，正确用户态通道是 **v4l2m2m**
+  （系统 ffmpeg 自带 h264/hevc/vp9 的 v4l2m2m），mpv 默认走
+  `hwdec=v4l2m2m-copy`（`/etc/mpv/mpv.conf`）。4K H264 解码约 12 倍速
+  （HEVC 35×、VP9 25×）。
+- Firefox 开箱即用硬解：4K H264 全程 VPU ACTIVE、RDD 解码进程 CPU 约 0.2%，
+  无需任何设置（Firefox ~116 起 V4L2m2m 已编进默认构建）。
 
 ### 音频
 
@@ -92,6 +103,10 @@ Android 侧（ZUXOS）保持原样，随时可以切回去。
   （否则 AP 重传的 MPDU 被当重复包丢掉，TCP 掉到 0.1–0.5 MB/s），固定 board name。
 - 驱动按需加载（`tb-wifi.service`），避免开机阶段把板子搞挂。
 - 法规域 CN；NetworkManager 接管 usb0 之外的接口。
+- MTP 有线存储：插 USB 线后电脑上弹出 `/home/alarm`（uMTP-Responder over
+  FunctionFS，与 NCM 共用同一个 gadget；deploy/mtp）。
+- 屏蔽 `systemd-networkd-wait-online`——networkd 在这台机器上不管理任何接口，
+  不屏蔽的话链路抖动时开机会死等几分钟。
 
 ### 传感器与自动亮度
 
@@ -114,6 +129,9 @@ Android 侧（ZUXOS）保持原样，随时可以切回去。
 
 - Plasma 6 + plasmalogin 登录管理器，首次登录自动 2× 缩放（参考设备用 2.5×，可随时改），
   Dolphin/Konsole/Discover 齐全。
+- 系统监视器的 GPU 页可用：给 ksystemstats 的 GPU 插件打了平台设备（msm/Adreno）
+  后端补丁——占用率来自 DRM fdinfo、频率来自 devfreq、温度来自 `gpuss` hwmon
+  （deploy/monitor；Release 页有预编译插件）。
 - 中文环境：`zh_CN.UTF-8`、Noto/Source Han 字体、fontconfig 优先 SC 字形。
 - 电源键短按不关机（交给桌面菜单），长按仍由 PMIC 处理；合盖由皮套守护接管。
 

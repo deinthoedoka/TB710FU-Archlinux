@@ -86,6 +86,12 @@ for u in tb-native-display tb-usb-ncm tb-usb-ncm-watch tb-wifi tb-audio-init tb-
 done
 ln -sfn /etc/systemd/system/tb-native-display.service "$S/display-manager.service.wants/tb-native-display.service"
 
+echo "== mask systemd-networkd-wait-online"
+# networkd manages zero interfaces here (Wi-Fi = tb-wifi/wpa_supplicant, usb0 = the
+# gadget); the wait-online unit has nothing to wait for yet blocks boot for minutes
+# on link-down flaps. /dev/null mask = classic systemd unit mask.
+ln -sfn /dev/null "$S/systemd-networkd-wait-online.service"
+
 echo "== pacman must never replace our kernel"
 # Our kernel lives in boot_a (packed by kShimC), not in /boot; the distro kernel is
 # unused. IgnorePkg keeps a `pacman -Syu` from re-installing linux-aarch64 if the user

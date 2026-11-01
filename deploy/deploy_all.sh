@@ -31,4 +31,6 @@ bash "$D/plasma/deploy_plasma_touch.sh" "$H"
 
 echo
 echo "done. Sensors are separate: deploy/sensors/install_sensors.sh (needs meson on the tablet)."
+echo "MTP needs the uMTP-Responder tarball: deploy/mtp/deploy_mtp.sh (see its README)."
+echo "GPU monitoring is separate: deploy/monitor/deploy_monitor.sh (builds on the tablet)."
 echo "Log out and back in (or reboot) so plasmalogin and the session pick everything up."

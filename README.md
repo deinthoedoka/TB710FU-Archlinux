@@ -90,7 +90,9 @@ This is not a "it boots" port — it is tuned for daily use:
   - `balanced`: everything unrestricted
   - `performance`: CPU min frequency raised to 35% of the maximum
 - The "Power Management" page in System Settings actually switches profiles (the stock
-  power-profiles-daemon only shows "unavailable" on Snapdragon).
+  power-profiles-daemon only shows "unavailable" on Snapdragon). The service is ordered
+  **before `display-manager.service`** — PowerDevil probes profiles exactly once at
+  startup and never retries, so it must lose the boot race.
 
 ### Audio
 
@@ -102,6 +104,16 @@ This is not a "it boots" port — it is tuned for daily use:
   controls where `on` actually writes 0).
 - WirePlumber config pins the speaker routing and disables the unpopulated inputs.
 
+### Video
+
+- Hardware decode is fully wired up: the `iris` VPU is a **stateful** decoder, so the
+  correct userspace path is **v4l2m2m** (in-tree ffmpeg ships h264/hevc/vp9 v4l2m2m);
+  mpv defaults to `hwdec=v4l2m2m-copy` (`/etc/mpv/mpv.conf`). 4K H264 decodes at ~12×
+  realtime (HEVC 35×, VP9 25×).
+- Firefox plays 4K H264 with hardware decode out of the box — no prefs needed
+  (V4L2m2m is compiled in since Firefox ~116); the RDD decoder process sits at ~0.2%
+  CPU while the VPU stays active.
+
 ### Network
 
 - ath12k: process-context polling disabled (it races NAPI for the same SRNG and
@@ -110,6 +122,10 @@ This is not a "it boots" port — it is tuned for daily use:
 - The driver loads on demand (`tb-wifi.service`) so the early boot phase cannot take
   the board down.
 - Regulatory domain CN; NetworkManager owns every interface except `usb0`.
+- MTP over the cable: plugging into a PC exposes `/home/alarm` as an MTP storage
+  device (uMTP-Responder over FunctionFS, sharing the NCM gadget; deploy/mtp).
+- `systemd-networkd-wait-online` is masked — networkd manages zero interfaces here,
+  and the unit otherwise stalls boot for minutes on link flaps.
 
 ### Sensors & auto brightness
 
@@ -137,6 +153,10 @@ This is not a "it boots" port — it is tuned for daily use:
 
 - Plasma 6 + the plasmalogin login manager; 2× scaling on first login (the reference
   device runs 2.5× — change any time); Dolphin / Konsole / Discover included.
+- The System Monitor's GPU page works: a patched ksystemstats GPU plugin adds a
+  platform-device (msm/Adreno) backend — usage from DRM fdinfo, frequency from devfreq,
+  temperature from the `gpuss` hwmon zones (deploy/monitor; prebuilt plugin on the
+  Release page).
 - Chinese environment: `zh_CN.UTF-8`, Noto / Source Han fonts, fontconfig prefers SC
   glyphs.
 - A short power-button press does not power off (the desktop menu decides); a long

@@ -17,7 +17,9 @@ that key (`install_payload.sh` does this if you pass `SSH_PUBKEY=` during the ro
 | `gamut/` | Display P3 ICC profile + `tb-gamut` CLI/menu entry (accurate / native / soft) |
 | `cover/` | flip-cover hall GPIO daemon: screen off + lock on close, wake on open |
 | `gpu/` | GPU `min_freq` touch boost (629 → 422 → 231 MHz) |
-| `power/` | `org.freedesktop.UPower.PowerProfiles` three-level service (power-saver / balanced / performance) |
+| `power/` | `org.freedesktop.UPower.PowerProfiles` three-level service (power-saver / balanced / performance); unit is ordered before `display-manager.service` so PowerDevil's one-shot probe doesn't race it |
+| `monitor/` | ksystemstats GPU plugin patch (msm/Adreno platform devices: fdinfo usage, devfreq freq, hwmon temp) — build on the tablet or install the Release asset |
+| `mtp/` | MTP storage over the USB cable (uMTP-Responder over FunctionFS, shares the NCM gadget) |
 | `plasma/` | first-login touch defaults (2× scale, no panel hiding) |
 | `sensors/` | hexagonrpcd + sensor registry (optional, needs meson on the tablet) |
 | `diagnostics/` | black-screen/backlight watcher, not installed by default |

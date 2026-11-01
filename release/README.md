@@ -23,6 +23,10 @@ anyway).
 | `arch-nbd-base.img.zst.part00…` | Rootfs for installing (MBR + ext4, **no vendor firmware**) |
 | `SHA256SUMS` | Checksums for every file |
 
+Since v1.1 the Release also carries device-side patches that cannot live in git
+(gitignored binaries): `ksystemstats_plugin_gpu-<ver>-tb710fu-msm-aarch64.so`, the
+prebuilt System Monitor GPU plugin — install with `deploy/monitor/deploy_prebuilt.sh`.
+
 Sizes of this build: `Image` 44 MB, dtb 138 KB, `kShimC.bin` 4 MB, packer 828 KB,
 modules 92 MB; the rootfs is 10 GiB raw / 3.38 GiB compressed, split into two volumes
 (1.9 GB + 1.6 GB). The artifacts are generated into the repository's `out-release/`

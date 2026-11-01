@@ -26,6 +26,7 @@ README 里的清单对应到具体文件，方便改动和排查。
 | --- | --- |
 | GPU 触摸抬频 629→422→231 MHz | `deploy/gpu/tb-gpu-boost` + `.service` |
 | 三档电源方案 | `deploy/power/tb-powerprofiles`（接管 UPower.PowerProfiles） |
+| 开机竞速修复（PowerDevil 只探测一次） | `deploy/power/tb-powerprofiles.service`：`WantedBy=graphical.target` + `Before=display-manager.service` |
 | 首次登录 2× 缩放 | `deploy/plasma/tb-plasma-touch-defaults` |
 
 ## 音频
@@ -43,6 +44,23 @@ README 里的清单对应到具体文件，方便改动和排查。
 | ath12k 关闭轮询、开启硬件去重、固定 board name | `build/rootfs/etc/modprobe.d/tb710fu-wifi.conf` |
 | 按需加载 Wi-Fi | `build/rootfs/usr/local/sbin/wifi-on` + `tb-wifi.service` |
 | USB 网卡（NBD/救援） | `build/rootfs/usr/local/sbin/tb-usb-ncm*` + `tb-usb-ncm*.service` |
+| MTP 有线存储（与 NCM 共用 gadget） | `deploy/mtp/`（uMTP-Responder 源码平板端编译）+ `tb-usb-ncm` 里的 ffs.mtp 兼容块 |
+| 屏蔽 networkd-wait-online 死等 | `build/install_payload.sh`（networkd 管理 0 个接口） |
+
+## 视频硬解
+
+| 行为 | 实现 |
+| --- | --- |
+| mpv 默认 v4l2m2m-copy 硬解 | `build/rootfs/etc/mpv/mpv.conf`（iris 是有状态解码器，v4l2m2m 直连） |
+| Firefox 硬解 | 无需配置：Firefox ≥116 的 V4L2m2m 编在默认构建里（实测 4K H264 RDD CPU 0.2%） |
+| iris VPU 启用 | kshim dts `&iris status=okay` + `vpu33_p4.mbn` 固件（用户自设备注入） |
+
+## 系统监视器 GPU 页
+
+| 行为 | 实现 |
+| --- | --- |
+| msm/Adreno 平台设备后端（官方插件只枚举 PCI） | `deploy/monitor/ksystemstats/`（LinuxMsmGpu：fdinfo 占用/显存、devfreq 频率、gpuss hwmon 温度） |
+| 平板端编译 / 预编译安装 | `deploy/monitor/build_plugin.sh` / `install_prebuilt.sh`（Release 页有 6.8.2 版 .so） |
 
 ## 传感器与自动亮度
 

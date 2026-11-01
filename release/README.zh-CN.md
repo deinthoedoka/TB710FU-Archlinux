@@ -20,6 +20,10 @@ Release 里发布的是“只缺你自己的东西”的半成品：我们的内
 | `arch-nbd-base.img.zst.part00…` | 安装用 rootfs（MBR + ext4，**无厂商固件**） |
 | `SHA256SUMS` | 全部文件的校验和 |
 
+v1.1 起 Release 还附带进不了 git 的设备端补丁二进制（`.gitignore` 排除 `*.so`）：
+`ksystemstats_plugin_gpu-<ver>-tb710fu-msm-aarch64.so`，系统监视器 GPU 页的预编译
+插件，用 `deploy/monitor/deploy_prebuilt.sh` 安装。
+
 本次构建的体积：`Image` 44 MB、dtb 138 KB、`kShimC.bin` 4 MB、打包器 828 KB、模块 92 MB；
 rootfs 原始 10 GiB，压缩后 3.38 GiB，分两卷（1.9 GB + 1.6 GB）。产物已经生成在仓库的
 `out-release/`（被 `.gitignore` 排除，可直接上传 Release）。

@@ -1,0 +1,15 @@
+[Unit]
+Description=TB710FU MTP gadget responder (uMTP-Responder over FunctionFS)
+# 先挂 ffs + 把 MTP function 加进 g1,再让 tb-usb-ncm 去 bind UDC
+Before=tb-usb-ncm.service
+After=systemd-modules-load.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/sbin/tb-mtp-gadget
+ExecStart=/usr/local/bin/umtprd
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
