@@ -1,0 +1,12 @@
+[Unit]
+Description=TB710FU volume rocker key swap
+After=systemd-udevd.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/sbin/tb-volume-swap
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

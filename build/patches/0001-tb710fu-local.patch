@@ -1,0 +1,176 @@
+--- a/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c
++++ b/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c
+@@ -31,6 +31,7 @@
+ 	struct device *dev;
+ 	struct q6dsp_clk *clks[Q6DSP_MAX_CLK_ID];
+ 	const struct q6dsp_clk_desc *desc;
++	bool registering;
+ };
+ 
+ static int clk_q6dsp_prepare(struct clk_hw *hw)
+@@ -38,6 +39,15 @@
+ 	struct q6dsp_clk *clk = to_q6dsp_clk(hw);
+ 	struct q6dsp_cc *cc = dev_get_drvdata(clk->dev);
+ 
++	/*
++	 * Clock registration reparents prepared orphans onto the new clocks,
++	 * which prepares them while clk_prepare_lock is held. The DSP command
++	 * needed here must not be sent from that context: the ADSP may still
++	 * be coming up and rpmsg_send() can block forever.
++	 */
++	if (!cc || cc->registering)
++		return -ENODEV;
++
+ 	return cc->desc->lpass_set_clk(clk->dev, clk->q6dsp_clk_id, clk->attributes,
+ 				     Q6DSP_LPASS_CLK_ROOT_DEFAULT, clk->rate);
+ }
+@@ -47,6 +57,9 @@
+ 	struct q6dsp_clk *clk = to_q6dsp_clk(hw);
+ 	struct q6dsp_cc *cc = dev_get_drvdata(clk->dev);
+ 
++	if (!cc || cc->registering)
++		return;
++
+ 	cc->desc->lpass_set_clk(clk->dev, clk->q6dsp_clk_id, clk->attributes,
+ 			      Q6DSP_LPASS_CLK_ROOT_DEFAULT, 0);
+ }
+@@ -88,6 +101,9 @@
+ 	struct q6dsp_clk *clk = to_q6dsp_clk(hw);
+ 	struct q6dsp_cc *cc = dev_get_drvdata(clk->dev);
+ 
++	if (!cc || cc->registering)
++		return -ENODEV;
++
+ 	return cc->desc->lpass_vote_clk(clk->dev, clk->q6dsp_clk_id,
+ 				  clk_hw_get_name(&clk->hw), &clk->handle);
+ }
+@@ -97,6 +113,9 @@
+ 	struct q6dsp_clk *clk = to_q6dsp_clk(hw);
+ 	struct q6dsp_cc *cc = dev_get_drvdata(clk->dev);
+ 
++	if (!cc || cc->registering)
++		return;
++
+ 	cc->desc->lpass_unvote_clk(clk->dev, clk->q6dsp_clk_id, clk->handle);
+ }
+ 
+@@ -144,7 +163,14 @@
+ 
+ 	cc->desc = desc;
+ 	cc->dev = dev;
++	/*
++	 * Set the drvdata before registering the clocks: registration can
++	 * reparent an orphan whose prepare count is migrated to one of these
++	 * clocks, which calls our prepare op through dev_get_drvdata().
++	 */
++	dev_set_drvdata(dev, cc);
+ 	q6dsp_clks = desc->clks;
++	cc->registering = true;
+ 
+ 	for (i = 0; i < desc->num_clks; i++) {
+ 		unsigned int id = q6dsp_clks[i].clk_id;
+@@ -174,12 +200,12 @@
+ 			return ret;
+ 	}
+ 
++	cc->registering = false;
++
+ 	ret = devm_of_clk_add_hw_provider(dev, q6dsp_of_clk_hw_get, cc);
+ 	if (ret)
+ 		return ret;
+ 
+-	dev_set_drvdata(dev, cc);
+-
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(q6dsp_clock_dev_probe);
+--- a/drivers/gpu/drm/panel/panel-nt36532-wqhd-dual-dsi-dsc.c
++++ b/drivers/gpu/drm/panel/panel-nt36532-wqhd-dual-dsi-dsc.c
+@@ -254,6 +254,8 @@
+ 	struct panel_info *pinfo = to_panel_info(panel);
+ 	int ret;
+ 
++	dev_info(panel->dev, "prepare\n");
++
+ 	ret = regulator_bulk_enable(ARRAY_SIZE(pinfo->supplies), pinfo->supplies);
+ 	if (ret < 0) {
+ 		dev_err(panel->dev, "failed to enable regulators: %d\n", ret);
+@@ -277,6 +279,8 @@
+ 	struct panel_info *pinfo = to_panel_info(panel);
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = pinfo->dsi[0] };
+ 
++	dev_info(panel->dev, "disable\n");
++
+ 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
+ 	msleep(50);
+ 
+@@ -290,6 +294,8 @@
+ {
+ 	struct panel_info *pinfo = to_panel_info(panel);
+ 
++	dev_info(panel->dev, "unprepare\n");
++
+ 	gpiod_set_value_cansleep(pinfo->reset_gpio, 1);
+ 	regulator_bulk_disable(ARRAY_SIZE(pinfo->supplies), pinfo->supplies);
+ 
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -29,6 +29,18 @@
+ 	QCOM_BATTMGR_X1E80100,
+ };
+ 
++/*
++ * TB710FU: the PMIC firmware reports the battery charge current with the
++ * opposite polarity from the power_supply ABI (charging is negative),
++ * which makes UPower report "discharging" during fast charging.  The
++ * board DTB is packed inside boot_a, so expose the DT quirk as a module
++ * parameter instead of requiring a boot image rebuild.
++ */
++static bool tb_current_inverted;
++module_param_named(current_inverted, tb_current_inverted, bool, 0444);
++MODULE_PARM_DESC(current_inverted,
++		 "Invert the battery current_now polarity (charging = positive)");
++
+ #define BATTMGR_BAT_STATUS		0x1
+ 
+ #define BATTMGR_REQUEST_NOTIFICATION	0x4
+@@ -1819,8 +1831,9 @@
+ 		return -ENOMEM;
+ 
+ 	battmgr->dev = dev;
+-	battmgr->current_inverted = device_property_read_bool(dev->parent,
+-							      "qcom,battery-current-inverted");
++	battmgr->current_inverted = tb_current_inverted ||
++		device_property_read_bool(dev->parent,
++					  "qcom,battery-current-inverted");
+ 	battmgr->baldur_usb_current_limit =
+ 		of_machine_is_compatible("lenovo,baldur");
+ 
+--- a/arch/arm64/boot/dts/qcom/sm8650-lenovo-tb710fu-kshim.dts
++++ b/arch/arm64/boot/dts/qcom/sm8650-lenovo-tb710fu-kshim.dts
+@@ -13,7 +13,7 @@
+ 
+ / {
+ 	chosen {
+-		bootargs = "console=tty0 loglevel=7 clk_ignore_unused pd_ignore_unused regulator_ignore_unused rdinit=/init tb710fu.nbd nbd.max_part=8";
++		bootargs = "console=tty0 loglevel=7 clk_ignore_unused pd_ignore_unused regulator_ignore_unused rdinit=/init";
+ 		/delete-property/ stdout-path;
+ 
+ 		framebuffer0: framebuffer@d5100000 {
+@@ -48,12 +48,12 @@
+ /* ADSP/CDSP firmware = this device's own split images from HyperOS
+  * /vendor/firmware_mnt/image (installed under qcom/sm8650/xiaoxin/gt/). */
+ &remoteproc_adsp {
+-	firmware-name = "qcom/sm8650/xiaoxin/gt/adsp.mdt",
+-			"qcom/sm8650/xiaoxin/gt/adsp_dtb.mdt";
++	firmware-name = "qcom/sm8650/xiaoxin/gt/adsp.mbn",
++			"qcom/sm8650/xiaoxin/gt/adsp_dtb.mbn";
+ };
+ &remoteproc_cdsp {
+-	firmware-name = "qcom/sm8650/xiaoxin/gt/cdsp.mdt",
+-			"qcom/sm8650/xiaoxin/gt/cdsp_dtb.mdt";
++	firmware-name = "qcom/sm8650/xiaoxin/gt/cdsp.mbn",
++			"qcom/sm8650/xiaoxin/gt/cdsp_dtb.mbn";
+ };
+ 
+ /* aw37504 bias + sy7758 backlights: enabled for the native panel; their drivers

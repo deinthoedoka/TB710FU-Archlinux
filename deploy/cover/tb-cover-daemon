@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""TB710FU 皮套处理：合盖锁屏+熄屏，开盖亮屏（保持锁屏）。
+
+硬件：原厂设备树叠加层里的 hall_switch 节点（compatible = qcom,hall_detect）
+      用了三路霍尔中断；其中 GPIO66 就是皮套传感器：
+      电平 0 = 合上，1 = 打开。这里直接通过 GPIO character device
+      (v2 uAPI) 申请这条线并监听边沿，不依赖 gpio-keys/SW_LID。
+
+合盖：loginctl lock-session —— GNOME 收到后自己锁屏；同时把背光 bl_power
+      置 4 强制熄屏（GNOME 的自动熄屏时序不稳定，这里自己保证）。
+开盖：恢复背光，再通过 uinput 注入一次 KEY_WAKEUP，把屏幕点回来；不涉及解锁。
+"""
+import ctypes
+import fcntl
+import glob
+import os
+import select
+import struct
+import subprocess
+import time
+
+CHIP = '/dev/gpiochip0'
+LINE = 66
+CLOSED_LEVEL = 0
+LOCK_USER = 'alarm'
+STARTUP_CLOSED_DELAY = 15.0
+DEBOUNCE = 0.06
+
+BLANK_ON = b'0'
+BLANK_OFF = b'4'
+
+GPIO_V2_GET_LINE_IOCTL = 0xC250B407        # _IOWR(0xB4, 0x07, struct request)
+GPIO_V2_LINE_GET_VALUES_IOCTL = 0xC010B40E  # _IOWR(0xB4, 0x0E, struct values)
+
+FLAG_INPUT = 1 << 2
+FLAG_EDGE_RISING = 1 << 4
+FLAG_EDGE_FALLING = 1 << 5
+
+EV_SYN = 0x00
+EV_KEY = 0x01
+KEY_WAKEUP = 247
+
+INPUT_EVENT = struct.Struct('llHHi')
+
+UI_DEV_SETUP = 0x405c5503
+UI_SET_EVBIT = 0x40045564
+UI_SET_KEYBIT = 0x40045565
+UI_DEV_CREATE = 0x5501
+
+
+class LineAttribute(ctypes.Structure):
+    _fields_ = [('id', ctypes.c_uint32),
+                ('padding', ctypes.c_uint32),
+                ('data', ctypes.c_uint64)]
+
+
+class ConfigAttribute(ctypes.Structure):
+    _fields_ = [('attr', LineAttribute), ('mask', ctypes.c_uint64)]
+
+
+class LineConfig(ctypes.Structure):
+    _fields_ = [('flags', ctypes.c_uint64),
+                ('num_attrs', ctypes.c_uint32),
+                ('padding', ctypes.c_uint32 * 5),
+                ('attrs', ConfigAttribute * 10)]
+
+
+class LineRequest(ctypes.Structure):
+    _fields_ = [('offsets', ctypes.c_uint32 * 64),
+                ('consumer', ctypes.c_char * 32),
+                ('config', LineConfig),
+                ('num_lines', ctypes.c_uint32),
+                ('event_buffer_size', ctypes.c_uint32),
+                ('padding', ctypes.c_uint32 * 5),
+                ('fd', ctypes.c_int32)]
+
+
+class LineValues(ctypes.Structure):
+    _fields_ = [('bits', ctypes.c_uint64), ('mask', ctypes.c_uint64)]
+
+
+class LineEvent(ctypes.Structure):
+    _fields_ = [('timestamp_ns', ctypes.c_uint64),
+                ('id', ctypes.c_uint32),
+                ('offset', ctypes.c_uint32),
+                ('seqno', ctypes.c_uint32),
+                ('line_seqno', ctypes.c_uint32),
+                ('padding', ctypes.c_uint32 * 6)]
+
+
+EVENT_SIZE = ctypes.sizeof(LineEvent)
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def request_line():
+    """向内核申请 GPIO66 的边沿事件，返回事件 fd。"""
+    chip_fd = os.open(CHIP, os.O_RDWR | os.O_CLOEXEC)
+    req = LineRequest()
+    req.num_lines = 1
+    req.offsets[0] = LINE
+    req.consumer = b'tb-cover-daemon'
+    req.config.flags = FLAG_INPUT | FLAG_EDGE_RISING | FLAG_EDGE_FALLING
+    req.event_buffer_size = EVENT_SIZE * 16
+    buf = ctypes.create_string_buffer(ctypes.sizeof(LineRequest))
+    ctypes.memmove(buf, ctypes.byref(req), ctypes.sizeof(LineRequest))
+    try:
+        fcntl.ioctl(chip_fd, GPIO_V2_GET_LINE_IOCTL, buf, True)
+    finally:
+        os.close(chip_fd)
+    out = LineRequest.from_buffer(buf)
+    if out.fd < 0:
+        raise RuntimeError('内核没有返回事件 fd')
+    return out.fd
+
+
+def read_value(fd):
+    vals = LineValues()
+    vals.mask = 1
+    fcntl.ioctl(fd, GPIO_V2_LINE_GET_VALUES_IOCTL, vals, True)
+    return vals.bits & 1
+
+
+def backlight_path():
+    paths = sorted(glob.glob('/sys/class/backlight/*/bl_power'))
+    return paths[0] if paths else None
+
+
+def set_backlight(on):
+    """0 = 正常点亮，4 = 断电熄屏。"""
+    path = backlight_path()
+    if path is None:
+        log('没找到背光设备，跳过 bl_power')
+        return
+    try:
+        with open(path, 'wb') as f:
+            f.write(BLANK_ON if on else BLANK_OFF)
+        log('背光 -> %s' % ('点亮' if on else '关闭'))
+    except OSError as exc:
+        log('写 %s 失败: %s' % (path, exc))
+
+
+class Waker:
+    """常驻一个只上报 KEY_WAKEUP 的虚拟输入设备，用来唤醒熄掉的屏幕。"""
+
+    def __init__(self):
+        self.fd = None
+
+    def open(self):
+        try:
+            fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            log('uinput 打开失败: %s' % exc)
+            return False
+        setup = (struct.pack('HHHH', 0x03, 0x0001, 0x0001, 0x0001)
+                 + b'tb-cover-wake'.ljust(80, b'\0')
+                 + struct.pack('I', 0))
+        try:
+            fcntl.ioctl(fd, UI_DEV_SETUP, setup)
+            fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
+            fcntl.ioctl(fd, UI_SET_KEYBIT, KEY_WAKEUP)
+            fcntl.ioctl(fd, UI_DEV_CREATE)
+        except OSError as exc:
+            log('uinput 创建虚拟设备失败: %s' % exc)
+            os.close(fd)
+            return False
+        self.fd = fd
+        log('唤醒设备 tb-cover-wake 已就绪')
+        return True
+
+    def _emit(self, etype, code, value):
+        os.write(self.fd, INPUT_EVENT.pack(0, 0, etype, code, value))
+
+    def wake(self):
+        if self.fd is None and not self.open():
+            return
+        try:
+            self._emit(EV_KEY, KEY_WAKEUP, 1)
+            self._emit(EV_SYN, 0, 0)
+            time.sleep(0.05)
+            self._emit(EV_KEY, KEY_WAKEUP, 0)
+            self._emit(EV_SYN, 0, 0)
+            log('开盖：已注入唤醒事件')
+        except OSError as exc:
+            log('注入唤醒事件失败: %s' % exc)
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+
+def lock_kde(uid):
+    """KDE 的锁屏程序不一定接 logind 的 Lock，直接调它的 D-Bus 接口兜底。"""
+    bus = 'unix:path=/run/user/%s/bus' % uid
+    try:
+        rc = subprocess.run(
+            ['runuser', '-u', LOCK_USER, '--', 'env',
+             'DBUS_SESSION_BUS_ADDRESS=' + bus,
+             'dbus-send', '--session', '--type=method_call',
+             '--dest=org.kde.screensaver', '/ScreenSaver',
+             'org.freedesktop.ScreenSaver.Lock'],
+            capture_output=True, timeout=5).returncode
+    except (OSError, subprocess.SubprocessError):
+        return
+    if rc == 0:
+        log('合盖：KDE 锁屏接口已调用')
+
+
+def lock_sessions():
+    try:
+        out = subprocess.run(['loginctl', 'list-sessions', '--no-legend'],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        log('loginctl 调用失败: %s' % exc)
+        return
+    targets = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[2] == LOCK_USER and parts[3] != '-':
+            targets.append((parts[0], parts[1]))
+    if not targets:
+        log('合盖：没有找到 %s 的图形会话，跳过锁屏' % LOCK_USER)
+        return
+    for sid, uid in targets:
+        try:
+            rc = subprocess.run(['loginctl', 'lock-session', sid],
+                                timeout=5).returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            log('锁屏 session %s 失败: %s' % (sid, exc))
+            rc = -1
+        log('合盖：锁屏 session %s (rc=%d)' % (sid, rc))
+        lock_kde(uid)
+
+
+def main():
+    waker = Waker()
+    waker.open()
+
+    line_fd = None
+    last_state = None
+    startup_deadline = None
+
+    while True:
+        if line_fd is None:
+            try:
+                line_fd = request_line()
+            except (OSError, RuntimeError) as exc:
+                log('申请 %s 的 GPIO%d 失败: %s，2 秒后重试'
+                    % (CHIP, LINE, exc))
+                time.sleep(2)
+                continue
+            last_state = read_value(line_fd)
+            log('已绑定 %s 的 GPIO%d，当前皮套：%s'
+                % (CHIP, LINE, '闭合' if last_state == CLOSED_LEVEL else '打开'))
+            set_backlight(last_state != CLOSED_LEVEL)
+            startup_deadline = (time.monotonic() + STARTUP_CLOSED_DELAY
+                                if last_state == CLOSED_LEVEL else None)
+
+        try:
+            readable, _, _ = select.select([line_fd], [], [], 1.0)
+        except (OSError, ValueError):
+            os.close(line_fd)
+            line_fd = None
+            continue
+
+        if readable:
+            try:
+                data = os.read(line_fd, EVENT_SIZE * 16)
+            except OSError as exc:
+                log('读取 GPIO 事件失败: %s，重新申请' % exc)
+                os.close(line_fd)
+                line_fd = None
+                continue
+            if data:
+                time.sleep(DEBOUNCE)
+                state = read_value(line_fd)
+                if state != last_state:
+                    last_state = state
+                    startup_deadline = None
+                    if state == CLOSED_LEVEL:
+                        log('皮套闭合')
+                        set_backlight(False)
+                        lock_sessions()
+                    else:
+                        log('皮套打开')
+                        set_backlight(True)
+                        waker.wake()
+
+        if startup_deadline is not None and time.monotonic() >= startup_deadline:
+            startup_deadline = None
+            if last_state == CLOSED_LEVEL:
+                log('启动时皮套就是闭合的，执行锁屏')
+                lock_sessions()
+
+
+if __name__ == '__main__':
+    main()

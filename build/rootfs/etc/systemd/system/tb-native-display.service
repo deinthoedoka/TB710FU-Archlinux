@@ -1,0 +1,18 @@
+[Unit]
+Description=TB710FU native DSI panel (msm) bring-up before the compositor
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service systemd-modules-load.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/local/sbin/tb-native-display
+RemainAfterExit=yes
+TimeoutStartSec=60
+
+[Install]
+# Wanted by both: on a graphical boot it must run *before* the compositor takes the
+# DRM master (that is when the panel off/on cycle is possible); on a console-only
+# boot display-manager.service does not exist at all, so multi-user is the fallback
+# and the panel still gets brought up. modprobe -i and the cycle are both idempotent.
+WantedBy=display-manager.service multi-user.target

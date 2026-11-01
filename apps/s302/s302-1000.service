@@ -1,0 +1,17 @@
+[Unit]
+Description=Steamcommunity 302 V15 control daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart="/var/lib/Steamcommunity_302/app/versions/15.0.9/steamcommunity_302.cli" "--data-dir" "/var/lib/Steamcommunity_302" "--runtime-dir" "/run/s302/1000" "--credential-file" "/home/alarm/.config/Steamcommunity_302/control.token" "--ipc" "/run/s302/1000/control.sock" "--allowed-uid" "1000" "--tcp=true" "--tcp-address" "127.0.0.1:0" "--start-service"
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=s302
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=HexagonRPC daemon for the ADSP sensor PD
+After=sysinit.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fastrpc
+Group=fastrpc
+ExecStart=/usr/local/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -s -R /usr/share/qcom/sm8650/LENOVO/tb710fu/
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

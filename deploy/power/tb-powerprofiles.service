@@ -1,0 +1,16 @@
+[Unit]
+Description=TB710FU 电源管理方案（power-profiles-daemon 兼容）
+Conflicts=power-profiles-daemon.service
+After=tb-gpu-boost.service
+Before=graphical.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.UPower.PowerProfiles
+ExecStart=/usr/local/bin/tb-powerprofiles
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

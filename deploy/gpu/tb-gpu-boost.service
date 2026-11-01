@@ -1,0 +1,13 @@
+[Unit]
+Description=TB710FU 安卓式 GPU 触摸加速
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tb-gpu-boost
+Restart=always
+RestartSec=3
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

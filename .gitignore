@@ -1,0 +1,29 @@
+# fetched dependencies and build outputs
+/deps/
+/sources/
+/out/
+/out-release/
+/logs/
+/build/firmware/*
+!/build/firmware/README.md
+
+# stray binaries
+*.img
+*.ko
+*.o
+*.so
+*.tar
+*.tar.gz
+*.tar.xz
+*.zip
+*.AppImage
+
+# python
+__pycache__/
+*.pyc
+
+# personal / device-specific
+*.gpt
+*.key
+*.pem
+!build/tools/testkey_rsa4096.pem

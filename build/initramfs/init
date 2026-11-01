@@ -1,0 +1,49 @@
+#!/bin/busybox sh
+# TB710FU kShimC Linux initramfs, Arch Linux variant.
+#
+# Root search order:
+#   1. GPT partition named "arch" (carved from the tail of userdata on LUN0 by install_ufs.sh)
+#      - "steamos" is also accepted so the exact same Image+DTB+initramfs boots either system
+#   2. NBD disk from the host over USB (cmdline tb710fu.nbd), NCM with an RNDIS fallback
+#   3. /diag.sh telnet shell (nothing is written)
+#
+# Dropped vs the SteamOS init: the "ext4 at byte offset 10 GiB of super" fallback. That layout
+# wrote Linux inside the Android super partition region; on this port the root is always a real
+# GPT partition, and a stale super-offset root would corrupt ZUXOS. Never resurrect it.
+/bin/busybox --install -s /bin
+mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null
+mkdir -p /dev/pts /tmp /run /newroot; mount -t devpts devpts /dev/pts; mount -t configfs none /sys/kernel/config
+echo "===== TB710FU Arch Linux (kShimC) $(uname -r) ====="
+grep -q tb710fu.diag /proc/cmdline && exec sh /diag.sh
+
+try_partition() {
+  want=$1; dev=""; n=0
+  while [ $n -lt 15 ]; do
+    for b in /sys/class/block/sd*; do grep -q "^PARTNAME=$want$" $b/uevent 2>/dev/null && dev=/dev/$(basename $b); done
+    [ -n "$dev" ] && [ -b "$dev" ] && break; sleep 1; n=$((n+1))
+  done
+  [ -n "$dev" ] || return 1
+  echo "partition $want = $dev (after ${n}s)"
+  mount -t ext4 -o rw,noatime $dev /newroot 2>/dev/null || return 1
+  [ -x /newroot/sbin/init ] || [ -L /newroot/sbin/init ] || { umount /newroot; return 1; }
+  echo "root = $dev, switching to /sbin/init"
+  switch_prep
+  exec switch_root /newroot /sbin/init
+}
+
+switch_prep() {
+  umount /sys/kernel/config /dev/pts 2>/dev/null
+  mount --move /dev /newroot/dev; mount --move /proc /newroot/proc; mount --move /sys /newroot/sys
+}
+
+# mainline Linux has no /dev/block/by-name, so partition names come from PARTNAME in uevent
+for want in arch steamos; do try_partition $want && break; done
+
+if grep -q tb710fu.nbd /proc/cmdline; then
+  sh /nbdroot.sh && { switch_prep; exec switch_root /newroot /sbin/init; }
+  echo "!! NBD root failed -> diagnostic shell"; exec sh /diag.sh
+fi
+
+echo "!! no usable root fs -> diagnostic shell"
+umount /newroot 2>/dev/null
+exec sh /diag.sh

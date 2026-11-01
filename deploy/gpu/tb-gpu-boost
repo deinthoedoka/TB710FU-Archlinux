@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""TB710FU：安卓式 GPU 输入加速（触摸即抬频，松手渐进回落）。
+
+内核的 GPU 调速器只有 simple_ondemand（默认 50 ms 才采样一次），
+没有安卓的 msm-adreno-tz。安卓的做法是"手指一碰屏幕，先把 GPU 最低
+频率顶到高位，松手后再逐级降下来"，这样滚动、窗口动画的头几帧不会
+掉在 231 MHz 上。这里通过 devfreq 的 min_freq 实现同样的效果，
+simple_ondemand 仍然负责高负载时继续往上冲。
+
+  触摸中/刚松手：629 MHz
+  松手 1.2 s 后：422 MHz
+  松手 4 s 后：231 MHz（回最低，不影响待机功耗）
+"""
+import glob
+import os
+import select
+import struct
+import time
+
+GPU_NAME = '3d00000.gpu'
+BOOST_FREQ = 629000000
+HOLD_FREQ = 422000000
+IDLE_FREQ = 231000000
+POLL_MS = 20
+BOOST_HOLD = 1.2
+DECAY_AFTER = 4.0
+
+EV_SYN = 0x00
+EV_KEY = 0x01
+EV_ABS = 0x03
+BTN_TOUCH = 0x14a
+ABS_MT_TRACKING_ID = 0x39
+EVENT = struct.Struct('llHHi')
+EVENT_SIZE = EVENT.size
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def gpu_dir(timeout=30.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for d in glob.glob('/sys/class/devfreq/*'):
+            try:
+                with open(os.path.join(d, 'name')) as f:
+                    if f.read().strip() == GPU_NAME:
+                        return d
+            except OSError:
+                continue
+        time.sleep(1)
+    raise RuntimeError('找不到 %s 的 devfreq 节点' % GPU_NAME)
+
+
+def write_attr(path, value):
+    try:
+        with open(path, 'w') as f:
+            f.write(str(value))
+        return True
+    except OSError as exc:
+        log('写 %s=%s 失败: %s' % (path, value, exc))
+        return False
+
+
+def find_touch_devices():
+    """按名字找触摸屏和手写笔，返回事件设备路径。"""
+    found = []
+    for ev in sorted(glob.glob('/dev/input/event*')):
+        name_path = '/sys/class/input/%s/device/name' % os.path.basename(ev)
+        try:
+            with open(name_path) as f:
+                name = f.read().strip()
+        except OSError:
+            continue
+        low = name.lower()
+        if 'touch' in low or 'pen' in low or 'stylus' in low:
+            found.append((ev, name))
+    return found
+
+
+class Booster:
+    def __init__(self, gdir):
+        self.min_path = os.path.join(gdir, 'min_freq')
+        self.poll_path = os.path.join(gdir, 'polling_interval')
+        self.level = IDLE_FREQ
+        self.touched = False
+
+    def set_level(self, freq, why):
+        if freq == self.level:
+            return
+        if write_attr(self.min_path, freq):
+            self.level = freq
+            log('GPU 最低频率 -> %d MHz（%s）' % (freq // 1000000, why))
+
+    def poke(self):
+        self.set_level(BOOST_FREQ, '触摸中')
+        self.touched = True
+
+    def idle_step(self, since_touch):
+        if not self.touched:
+            return
+        if since_touch > DECAY_AFTER:
+            self.set_level(IDLE_FREQ, '空闲回落')
+            self.touched = False
+        elif since_touch > BOOST_HOLD:
+            self.set_level(HOLD_FREQ, '松手保持')
+
+
+def scan_events(data):
+    """返回 (是否有输入, 手指状态)；手指状态 None 表示这包事件没说。"""
+    activity = False
+    down = None
+    for off in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
+        _, _, etype, code, value = EVENT.unpack_from(data, off)
+        if etype not in (EV_KEY, EV_ABS):
+            continue
+        activity = True
+        if etype == EV_KEY and code == BTN_TOUCH:
+            down = value != 0
+        elif etype == EV_ABS and code == ABS_MT_TRACKING_ID:
+            down = value != -1
+    return activity, down
+
+
+def main():
+    gdir = gpu_dir()
+    boost = Booster(gdir)
+    write_attr(boost.poll_path, POLL_MS)
+    boost.level = IDLE_FREQ
+    write_attr(boost.min_path, IDLE_FREQ)
+    log('GPU 加速守护启动：%s，simple_ondemand 采样 %d ms'
+        % (gdir, POLL_MS))
+
+    devices = find_touch_devices()
+    fds = {}
+    for ev, name in devices:
+        try:
+            fds[os.open(ev, os.O_RDONLY | os.O_NONBLOCK)] = name
+        except OSError as exc:
+            log('打开 %s 失败: %s' % (ev, exc))
+    if not fds:
+        log('没找到触摸设备，只做调速参数设置')
+    else:
+        log('监听触摸：%s' % '、'.join(sorted(fds.values())))
+
+    last_touch = 0.0
+    finger_down = False
+    while True:
+        now = time.monotonic()
+        if boost.touched:
+            next_change = BOOST_HOLD if now - last_touch <= BOOST_HOLD else DECAY_AFTER
+            timeout = max(0.0, next_change - (now - last_touch))
+            timeout = min(timeout, 1.0)
+        else:
+            timeout = 5.0
+        readable = []
+        if fds:
+            try:
+                readable, _, _ = select.select(list(fds), [], [], timeout)
+            except OSError:
+                readable = []
+        if readable:
+            for fd in readable:
+                try:
+                    data = os.read(fd, EVENT_SIZE * 32)
+                except OSError:
+                    continue
+                activity, down = scan_events(data)
+                if not activity:
+                    continue
+                if down is not None:
+                    finger_down = down
+                last_touch = time.monotonic()
+                boost.poke()
+        else:
+            if boost.touched:
+                since = time.monotonic() - last_touch
+                if finger_down and since < 10.0:
+                    continue          # 手指还按在屏幕上，保持高频
+                finger_down = False
+                boost.idle_step(since)
+
+
+if __name__ == '__main__':
+    main()

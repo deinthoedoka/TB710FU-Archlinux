@@ -1,0 +1,13 @@
+[Unit]
+Description=TB710FU keep UFS controller runtime-active
+DefaultDependencies=no
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo on > /sys/bus/platform/devices/1d84000.ufshc/power/control; echo on > /sys/block/sda/device/power/control'
+
+[Install]
+WantedBy=multi-user.target

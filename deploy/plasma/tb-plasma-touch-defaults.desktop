@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TB710FU 触屏默认值
+Comment=首次登录时把内屏缩放设为适合手指的 2 倍
+Exec=/usr/local/bin/tb-plasma-touch-defaults
+NoDisplay=true
+X-KDE-autostart-phase=2
+OnlyShowIn=KDE;

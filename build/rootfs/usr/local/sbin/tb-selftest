@@ -1,0 +1,74 @@
+#!/bin/sh
+# tb-selftest - read-only post-boot check of everything the TB710FU port touches.
+# Run as root after boot (and again after each kernel/payload change). Exit code
+# is the number of failed checks; nothing here writes to the device or to disk.
+ok()   { echo "  ok    $1"; }
+bad()  { echo "  FAIL  $1"; fails=$((fails + 1)); }
+fails=0
+
+echo "== kernel / board"
+case $(uname -r) in
+  *-tb710fu) ok "kernel $(uname -r)" ;;
+  *) bad "kernel $(uname -r) is not the -tb710fu build" ;;
+esac
+model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
+case "$model" in *TB710FU*) ok "device tree model: $model" ;; *) bad "device tree model: ${model:-<none>}" ;; esac
+n=$(grep -c ^processor /proc/cpuinfo); [ "$n" -ge 6 ] && ok "cpus: $n" || bad "cpus: $n"
+
+echo "== modules the payload needs loaded"
+for m in msm panel_nt36532_wqhd_dual_dsi_dsc dispcc_sm8550 sy7758 aw37503_regulator snd-soc-aw882xx; do
+  # lsmod prints the module name with '-' folded to '_'
+  u=$(echo "$m" | tr '-' '_')
+  if lsmod | grep -qE "^($m|$u) "; then ok "$m loaded"; else bad "$m not loaded"; fi
+done
+
+echo "== display"
+dsi=$(ls -d /sys/class/drm/card*-DSI-* 2>/dev/null | head -1)
+[ -n "$dsi" ] && ok "DSI connector: $(basename "$dsi")" || bad "no DSI connector"
+mode=$(cat /sys/class/drm/card*-DSI-1/modes 2>/dev/null | head -1)
+[ -n "$mode" ] && ok "preferred mode: $mode" || bad "no mode on the DSI connector"
+grep -q '"\|error\|fail' /run/tb-panel-cycle.log 2>/dev/null || ok "panel cycle log clean: $(tail -1 /run/tb-panel-cycle.log 2>/dev/null)"
+cards=$(ls /dev/dri/card* 2>/dev/null)
+[ -n "$cards" ] && ok "DRM card(s): $(echo $cards | sed 's#/dev/dri/##g')" || bad "no /dev/dri/card* (msm did not bind)"
+[ -e /dev/dri/renderD128 ] && ok "/dev/dri/renderD128 exists" || bad "/dev/dri/renderD128 missing"
+
+echo "== audio (TDM + AW882xx)"
+grep -q TB710FU /proc/asound/cards 2>/dev/null && ok "sound card present" || bad "no TB710FU sound card"
+[ -e /proc/asound/card0/pcm0p/sub0/status ] && ok "MultiMedia1 playback device exists" || bad "pcm0p missing"
+for i in 0 1 2 3; do
+  # only the value line (": values=N"); the type line also contains "values=1,items=2"
+  v=$(amixer -c 0 cget name="aw_dev_${i}_switch" 2>/dev/null | sed -n 's/^ *: values=\([0-9]*\).*/\1/p' | head -1)
+  [ "$v" = "1" ] && ok "amp $i enabled" || bad "amp $i not enabled (value ${v:-n/a})"
+done
+
+echo "== wifi"
+[ -d /sys/class/ieee80211/phy0 ] && ok "wireless phy0" || bad "no ieee80211 phy (run wifi-on)"
+if ls /sys/class/net/ 2>/dev/null | grep -qE '^(wlan0|wlp[0-9]+s[0-9]+)$'; then ok "wireless netdev up"; else echo "  note  no wireless netdev yet (normal before wifi-on/association)"; fi
+
+echo "== touch / pen"
+grep -q 'Name="NVTCapacitiveTouchScreen"' /proc/bus/input/devices 2>/dev/null && ok "touchscreen" || bad "touchscreen missing (run: systemctl restart tb-touch-check)"
+grep -q 'Name="NVTCapacitivePen"' /proc/bus/input/devices 2>/dev/null && ok "pen device" || echo "  note  pen device absent (ok if the pen was never near the screen)"
+[ "$(cat /proc/support_pen 2>/dev/null)" = "1" ] && ok "pen scanning enabled" || echo "  note  /proc/support_pen=$(cat /proc/support_pen 2>/dev/null) - pen scan off until the pen appears"
+
+echo "== power"
+mem=$(cat /sys/power/mem_sleep 2>/dev/null)
+case "$mem" in *"[s2idle]"*) ok "mem_sleep = $mem" ;; *) bad "mem_sleep = ${mem:-none} - must be s2idle" ;; esac
+echo "  note  logind HandlePowerKey=$(loginctl --no-pager show-config 2>/dev/null | grep -o 'HandlePowerKey=\w*' | cut -d= -f2)"
+
+echo "== storage"
+root=$(findfs LABEL=arch-root 2>/dev/null || true)
+[ -n "$root" ] && ok "arch-root = $root ($(df -h / | awk 'NR==2{print $1" "$2" free "$4}'))" || echo "  note  booted without an arch-root partition (NBD/diag boot)"
+for p in userdata metadata super; do
+  part=$(for b in /sys/class/block/sd*; do grep -q "^PARTNAME=$p$" "$b/uevent" 2>/dev/null && basename "$b"; done | head -1)
+  [ -n "$part" ] && ok "partition $p = /dev/$part" || bad "partition $p missing"
+done
+
+echo "== userspace bits the port expects"
+for p in amixer iw nmcli python3; do command -v $p >/dev/null && ok "$p" || bad "$p not installed"; done
+[ -e /usr/lib/firmware/qcom/sm8650/Lenovo-TB710FU-tplg.bin ] && ok "TDM topology firmware" || bad "topology firmware missing (needs tools/patch_tplg.py output)"
+[ -e /usr/lib/firmware/novatek/novatek_nt36532_fw.bin ] && ok "touch firmware" || bad "touch firmware missing"
+[ -e /usr/lib/firmware/qcom/sm8650/xiaoxin/gt/gen70900_zap.mbn ] && ok "GPU zap firmware" || bad "zap firmware missing"
+
+echo
+if [ "$fails" = 0 ]; then echo "ALL CHECKS PASSED"; else echo "$fails CHECK(S) FAILED"; fi
+exit $fails

@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""TB710FU 电源管理方案服务（power-profiles-daemon 兼容）。
+
+为什么需要它：KDE 6.8 的 PowerDevil 只在 PPD 上报的 Driver 不是
+"placeholder" 时才显示"电源管理方案"。这块平板是骁龙 8650，内核没有
+ACPI platform_profile，PPD 只能退化成 placeholder（而且切换是空操作）。
+本服务接管 PPD 的 D-Bus 名字与接口，上报三个真实方案：
+
+  power-saver   节能：CPU 各簇最高频率砍到 50%，GPU 上限 422 MHz，暂停触摸抬频
+  balanced      平衡：CPU/GPU 全部放开，保留触摸抬频
+  performance   性能：全部放开，并把 CPU 各簇最低频率抬到最大值的 35%
+
+协议与 PPD 0.30 一致（org.freedesktop.UPower.PowerProfiles，同时保留
+net.hadess.PowerProfiles 旧名字）。切换结果写入 /var/lib/tb-powerprofiles/active，
+重启后沿用。
+"""
+import glob
+import os
+import signal
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+try:
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import GLibUnix
+
+    def add_signal(priority, signum, callback):
+        return GLibUnix.signal_add(priority, signum, callback)
+except (ValueError, ImportError):
+    def add_signal(priority, signum, callback):
+        return GLib.unix_signal_add(priority, signum, callback)
+
+NEW_IFACE = "org.freedesktop.UPower.PowerProfiles"
+OLD_IFACE = "net.hadess.PowerProfiles"
+NEW_PATH = "/org/freedesktop/UPower/PowerProfiles"
+OLD_PATH = "/net/hadess/PowerProfiles"
+TARGETS = [(NEW_PATH, NEW_IFACE), (OLD_PATH, OLD_IFACE)]
+NAMES = ["org.freedesktop.UPower.PowerProfiles", "net.hadess.PowerProfiles"]
+
+CPU_DIR = "/sys/devices/system/cpu/cpufreq"
+GPU_NAME = "3d00000.gpu"
+STATE_DIR = "/var/lib/tb-powerprofiles"
+STATE_FILE = os.path.join(STATE_DIR, "active")
+BOOST_UNIT = "tb-gpu-boost.service"
+GPU_IDLE = 231000000
+GPU_SAVER_MAX = 422000000
+
+PROFILES = {
+    "power-saver": {"cpu_max": 0.50, "cpu_min": 0.0, "gpu_max": GPU_SAVER_MAX, "boost": False},
+    "balanced": {"cpu_max": 1.0, "cpu_min": 0.0, "gpu_max": None, "boost": True},
+    "performance": {"cpu_max": 1.0, "cpu_min": 0.35, "gpu_max": None, "boost": True},
+}
+PRIORITY = {"power-saver": 0, "balanced": 1, "performance": 2}
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def read_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def read_text(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def write_int(path, value):
+    try:
+        with open(path, "w") as f:
+            f.write(str(int(value)))
+        return True
+    except OSError as exc:
+        log("写入 %s=%s 失败：%s" % (path, value, exc))
+        return False
+
+
+def pick_freq(available, target, below):
+    """从 scaling_available_frequencies 里挑一个不超过/不低于 target 的档位。"""
+    values = []
+    for item in available.split():
+        try:
+            values.append(int(item))
+        except ValueError:
+            pass
+    if not values:
+        return int(target)
+    pool = [v for v in values if v <= target] if below else [v for v in values if v >= target]
+    if pool:
+        return max(pool) if below else min(pool)
+    return min(values) if below else max(values)
+
+
+def apply_cpu(spec):
+    policies = sorted(glob.glob(os.path.join(CPU_DIR, "policy*")))
+    if not policies:
+        log("找不到 cpufreq policy，跳过 CPU 调频")
+        return
+    for policy in policies:
+        cpuinfo_max = read_int(os.path.join(policy, "cpuinfo_max_freq"))
+        cpuinfo_min = read_int(os.path.join(policy, "cpuinfo_min_freq"))
+        if not cpuinfo_max or not cpuinfo_min:
+            continue
+        available = read_text(os.path.join(policy, "scaling_available_frequencies"))
+        max_value = pick_freq(available, cpuinfo_max * spec["cpu_max"], below=True)
+        min_value = cpuinfo_min
+        if spec["cpu_min"] > 0:
+            min_value = pick_freq(available, cpuinfo_max * spec["cpu_min"], below=False)
+        if max_value < cpuinfo_min:
+            max_value = cpuinfo_min
+        if min_value > max_value:
+            min_value = cpuinfo_min
+        # 先把下限放到底，再改上限，最后抬下限，任何时刻都满足 min <= max
+        write_int(os.path.join(policy, "scaling_min_freq"), cpuinfo_min)
+        write_int(os.path.join(policy, "scaling_max_freq"), max_value)
+        if min_value > cpuinfo_min:
+            write_int(os.path.join(policy, "scaling_min_freq"), min_value)
+        log("%s: max=%d min=%d" % (os.path.basename(policy), max_value, min_value))
+
+
+def gpu_dir():
+    for dev in glob.glob("/sys/class/devfreq/*"):
+        try:
+            with open(os.path.join(dev, "name")) as f:
+                if f.read().strip() == GPU_NAME:
+                    return dev
+        except OSError:
+            continue
+    return None
+
+
+def apply_gpu(spec):
+    dev = gpu_dir()
+    if not dev:
+        log("找不到 GPU devfreq 节点，跳过")
+        return
+    available = read_text(os.path.join(dev, "available_frequencies"))
+    if spec["gpu_max"] is None:
+        max_value = max(int(v) for v in available.split()) if available else None
+    else:
+        max_value = pick_freq(available, spec["gpu_max"], below=True)
+    cur_max = read_int(os.path.join(dev, "max_freq"))
+    if max_value is not None and cur_max != max_value:
+        # 降上限前先把 min 放到最低档，避免 min > max
+        write_int(os.path.join(dev, "min_freq"), GPU_IDLE)
+        write_int(os.path.join(dev, "max_freq"), max_value)
+        log("GPU max=%d" % max_value)
+    elif max_value is None and spec["cpu_max"] == 1.0:
+        pass
+
+
+def set_boost(enabled):
+    action = "start" if enabled else "stop"
+    try:
+        subprocess.run(["systemctl", action, BOOST_UNIT], timeout=15,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("systemctl %s %s 失败：%s" % (action, BOOST_UNIT, exc))
+
+
+def system_shutting_down():
+    """关机/重启过程中不要再把 tb-gpu-boost 拉起来。"""
+    try:
+        result = subprocess.run(["systemctl", "is-system-running"], capture_output=True,
+                                text=True, timeout=5)
+        return result.stdout.strip() in ("stopping", "offline", "maintenance")
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
+class Controller:
+    def __init__(self):
+        os.makedirs(STATE_DIR, exist_ok=True)
+        self.user_profile = self.load()
+        self.holds = {}          # cookie -> (profile, reason, app_id)
+        self.next_cookie = 1
+        self.conn = None
+        self.stopping = False
+
+    def load(self):
+        try:
+            with open(STATE_FILE) as f:
+                name = f.read().strip()
+        except OSError:
+            return "balanced"
+        return name if name in PROFILES else "balanced"
+
+    def save(self):
+        try:
+            tmp = STATE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(self.user_profile + "\n")
+            os.replace(tmp, STATE_FILE)
+        except OSError as exc:
+            log("保存方案失败：%s" % exc)
+
+    def effective(self):
+        if not self.holds:
+            return self.user_profile
+        best = max(self.holds.values(), key=lambda item: PRIORITY.get(item[0], -1))
+        return best[0]
+
+    def apply(self, name):
+        spec = PROFILES[name]
+        log("应用电源方案：%s" % name)
+        apply_cpu(spec)
+        apply_gpu(spec)
+        set_boost(spec["boost"])
+
+    # ---- D-Bus ----
+    def profiles_variant(self):
+        items = []
+        for name in ("power-saver", "balanced", "performance"):
+            items.append({
+                "Profile": GLib.Variant("s", name),
+                "PlatformDriver": GLib.Variant("s", "tb710fu"),
+                "Driver": GLib.Variant("s", "tb710fu"),
+            })
+        return GLib.Variant("aa{sv}", items)
+
+    def holds_variant(self):
+        items = []
+        for cookie, (profile, reason, app_id) in self.holds.items():
+            items.append({
+                "Profile": GLib.Variant("s", profile),
+                "Reason": GLib.Variant("s", reason),
+                "ApplicationId": GLib.Variant("s", app_id),
+            })
+        return GLib.Variant("aa{sv}", items)
+
+    def emit_changed(self, changed):
+        for path, iface in TARGETS:
+            try:
+                self.conn.emit_signal(None, path, "org.freedesktop.DBus.Properties",
+                                      "PropertiesChanged",
+                                      GLib.Variant("(sa{sv}as)", (iface, changed, [])))
+            except GLib.Error as exc:
+                log("发 PropertiesChanged 失败：%s" % exc)
+
+    def update(self, changed_names):
+        name = self.effective()
+        self.apply(name)
+        changed = {}
+        for prop in changed_names:
+            if prop == "ActiveProfile":
+                changed[prop] = GLib.Variant("s", name)
+            elif prop == "ActiveProfileHolds":
+                changed[prop] = self.holds_variant()
+        self.emit_changed(changed)
+
+    def on_get(self, conn, sender, path, iface, prop):
+        if prop == "ActiveProfile":
+            return GLib.Variant("s", self.effective())
+        if prop == "Profiles":
+            return self.profiles_variant()
+        if prop == "Actions":
+            return GLib.Variant("as", [])
+        if prop == "ActiveProfileHolds":
+            return self.holds_variant()
+        if prop in ("PerformanceInhibited", "PerformanceDegraded"):
+            return GLib.Variant("s", "")
+        if prop == "Version":
+            return GLib.Variant("s", "0.30")
+        if prop == "BatteryAware":
+            return GLib.Variant("b", True)
+        return None
+
+    def on_set(self, conn, sender, path, iface, prop, value):
+        if prop != "ActiveProfile":
+            return False
+        try:
+            name = value.unpack()
+        except (TypeError, ValueError):
+            return False
+        if name not in PROFILES:
+            return False
+        if name == self.user_profile and not self.holds:
+            return True
+        self.user_profile = name
+        self.save()
+        self.update(["ActiveProfile"])
+        return True
+
+    def on_method(self, conn, sender, path, iface, method, params, invocation):
+        try:
+            if method == "HoldProfile":
+                profile, reason, app_id = params.unpack()
+                if profile not in PROFILES:
+                    invocation.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs",
+                                                 "%s is not a valid profile" % profile)
+                    return
+                cookie = self.next_cookie
+                self.next_cookie += 1
+                self.holds[cookie] = (profile, reason, app_id)
+                self.update(["ActiveProfile", "ActiveProfileHolds"])
+                invocation.return_value(GLib.Variant("(u)", (cookie,)))
+            elif method == "ReleaseProfile":
+                (cookie,) = params.unpack()
+                if cookie not in self.holds:
+                    invocation.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs",
+                                                 "unknown cookie %d" % cookie)
+                    return
+                del self.holds[cookie]
+                self.update(["ActiveProfile", "ActiveProfileHolds"])
+                for p, i in TARGETS:
+                    conn.emit_signal(None, p, i, "ProfileReleased", GLib.Variant("(u)", (cookie,)))
+                invocation.return_value(None)
+            elif method == "SetActionEnabled":
+                invocation.return_value(None)
+            else:
+                invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod",
+                                             "unknown method %s" % method)
+        except (TypeError, ValueError) as exc:
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", str(exc))
+
+
+def interface_xml(iface):
+    return """<node>
+  <interface name="%s">
+    <method name="HoldProfile">
+      <arg type="s" direction="in" name="profile"/>
+      <arg type="s" direction="in" name="reason"/>
+      <arg type="s" direction="in" name="application_id"/>
+      <arg type="u" direction="out" name="cookie"/>
+    </method>
+    <method name="ReleaseProfile">
+      <arg type="u" direction="in" name="cookie"/>
+    </method>
+    <method name="SetActionEnabled">
+      <arg type="s" direction="in" name="action"/>
+      <arg type="b" direction="in" name="enabled"/>
+    </method>
+    <signal name="ProfileReleased">
+      <arg type="u" name="cookie"/>
+    </signal>
+    <property name="ActiveProfile" type="s" access="readwrite"/>
+    <property name="Profiles" type="aa{sv}" access="read"/>
+    <property name="Actions" type="as" access="read"/>
+    <property name="ActiveProfileHolds" type="aa{sv}" access="read"/>
+    <property name="PerformanceInhibited" type="s" access="read"/>
+    <property name="PerformanceDegraded" type="s" access="read"/>
+    <property name="Version" type="s" access="read"/>
+    <property name="BatteryAware" type="b" access="read"/>
+  </interface>
+</node>""" % iface
+
+
+def main():
+    controller = Controller()
+    conn = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    controller.conn = conn
+
+    for path, iface in TARGETS:
+        node = Gio.DBusNodeInfo.new_for_xml(interface_xml(iface))
+        conn.register_object(path, node.interfaces[0], controller.on_method,
+                             controller.on_get, controller.on_set)
+
+    for name in NAMES:
+        Gio.bus_own_name_on_connection(conn, name, Gio.BusNameOwnerFlags.NONE, None, None)
+        log("已注册 D-Bus 名字 %s" % name)
+
+    controller.apply(controller.effective())
+    log("电源方案服务启动：当前 %s" % controller.effective())
+
+    loop = GLib.MainLoop()
+
+    def on_term(_signum):
+        if not controller.stopping:
+            controller.stopping = True
+            log("收到退出信号，恢复平衡档频率")
+            apply_cpu(PROFILES["balanced"])
+            apply_gpu(PROFILES["balanced"])
+            if not system_shutting_down():
+                set_boost(True)
+        loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    add_signal(GLib.PRIORITY_HIGH, signal.SIGTERM, on_term)
+    add_signal(GLib.PRIORITY_HIGH, signal.SIGINT, on_term)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

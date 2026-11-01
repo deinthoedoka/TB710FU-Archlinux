@@ -1,0 +1,16 @@
+wake_gesture
+step_detect
+pedometer
+persist_stationary_detect
+rgb
+tilt
+offbody_detect
+persist_motion_detect
+gravity
+sig_motion
+device_orient
+gyro
+gyro_cal
+game_rv
+ambient_light
+accel

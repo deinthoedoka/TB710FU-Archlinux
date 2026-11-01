@@ -1,0 +1,13 @@
+[Unit]
+Description=Ambient light auto brightness (TB710FU)
+After=plasma-powerdevil.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tb-als-daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=plasma-workspace.target

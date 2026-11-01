@@ -1,0 +1,19 @@
+#!/bin/bash
+# 首次登录时把内屏缩放设为 2 倍（之后 KScreen 会记住），只作用于 KDE 会话。
+export PATH=/usr/local/bin:/usr/bin:/bin
+
+out=""
+for _ in $(seq 1 40); do
+    out=$(kscreen-doctor -o 2>/dev/null)
+    [ -n "$out" ] && break
+    sleep 1
+done
+[ -z "$out" ] && exit 0
+
+# 优先内屏 DSI-*，没有就取第一个输出
+name=$(printf '%s\n' "$out" | grep -oE 'DSI-[0-9]+' | head -n1)
+[ -z "$name" ] && name=$(printf '%s\n' "$out" | awk '/^Output: [0-9]+ /{print $3; exit}')
+[ -z "$name" ] && exit 0
+
+kscreen-doctor "output.$name.scale.2" >/dev/null 2>&1 || true
+exit 0

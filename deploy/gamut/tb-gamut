@@ -1,0 +1,77 @@
+#!/bin/bash
+# 色域切换：tb-gamut [native|accurate|soft|toggle|status]
+#   native   面板原生色域（KDE 默认，sRGB 内容直出，最鲜艳）
+#   accurate 按 Display P3 描述面板，KWin 把 sRGB 内容正确映射过去（颜色回到准确）
+#   soft     用 AdobeRGB 描述面板，映射更保守（比 accurate 更淡，备用）
+set -u
+
+output=${TB_GAMUT_OUTPUT:-DSI-1}
+p3=/usr/share/color/icc/tb710fu/DisplayP3.icc
+argb=/usr/share/color/icc/colord/AdobeRGB1998.icc
+
+notify() {
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -a "色域" -i preferences-desktop-color "$1" "$2" 2>/dev/null || true
+    fi
+}
+
+strip_ansi() {
+    sed 's/\x1b\[[0-9;]*m//g'
+}
+
+current() {
+    kscreen-doctor -o 2>/dev/null | strip_ansi \
+        | awk -v out="$output" '
+            $1 == "Output:" { seen = ($3 == out) }
+            seen && /Color profile source:/ { print $NF; exit }'
+}
+
+case "${1:-status}" in
+native|vivid|off)
+    kscreen-doctor "output.$output.colorProfileSource.sRGB" >/dev/null || exit 1
+    notify "色域：原生" "面板原生广色域，颜色最鲜艳"
+    echo "已切换到原生色域（鲜艳）"
+    ;;
+accurate|srgb|p3|on)
+    if [ ! -f "$p3" ]; then
+        echo "缺少 ICC 特性文件：$p3" >&2
+        exit 1
+    fi
+    kscreen-doctor "output.$output.iccprofile.$p3" \
+                   "output.$output.colorProfileSource.ICC" >/dev/null || exit 1
+    notify "色域：准确" "sRGB 内容已映射到面板色域，不过饱和"
+    echo "已切换到准确色域（Display P3 ICC）"
+    ;;
+soft|argb)
+    if [ ! -f "$argb" ]; then
+        echo "缺少 ICC 特性文件：$argb" >&2
+        exit 1
+    fi
+    kscreen-doctor "output.$output.iccprofile.$argb" \
+                   "output.$output.colorProfileSource.ICC" >/dev/null || exit 1
+    notify "色域：柔和" "按 AdobeRGB 描述面板，颜色更淡"
+    echo "已切换到柔和色域（AdobeRGB ICC）"
+    ;;
+toggle)
+    cur=$(current)
+    if [ "$cur" = "ICC" ]; then
+        exec "$0" native
+    else
+        exec "$0" accurate
+    fi
+    ;;
+status)
+    cur=$(current)
+    echo "输出：$output"
+    echo "色彩配置来源：${cur:-未知}"
+    if [ "$cur" = "ICC" ]; then
+        kscreen-doctor -o 2>/dev/null | strip_ansi | awk -v out="$output" '
+            $1 == "Output:" { seen = ($3 == out) }
+            seen && /ICC profile:/ { print "ICC：" $NF; exit }'
+    fi
+    ;;
+*)
+    echo "用法: tb-gamut [native|accurate|soft|toggle|status]" >&2
+    exit 2
+    ;;
+esac

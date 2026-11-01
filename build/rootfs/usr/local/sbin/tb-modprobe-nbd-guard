@@ -1,0 +1,16 @@
+#!/bin/sh
+# modprobe "install" hook for NBD-root boots.
+#
+# The type-C role switch (ucsi_glink) and the codec's USB SS mux (wcd939x-usbss) reset DWC3
+# when they probe. On an NBD-root boot the root filesystem lives on that very USB link, so the
+# reset re-enumerates the gadget and the kernel loses its root fs ~10 s into boot (measured
+# 2026-10-31: 83 MB read, then the connection aborts with the first module batch).
+# Refuse them only while the root fs actually lives on nbd0 (the USB link); a UFS boot
+# keeps the drivers even if the cmdline still carries tb710fu.nbd (the init prefers the
+# "arch" GPT partition and never starts the NBD client).
+[ -n "${1:-}" ] || exit 1
+if grep -q '^/dev/nbd0' /proc/mounts; then
+    echo "tb-nbd-guard: skipping $1 (NBD root on the USB link)" > /dev/kmsg 2>/dev/null
+    exit 0
+fi
+exec /usr/bin/modprobe --ignore-install "$1"

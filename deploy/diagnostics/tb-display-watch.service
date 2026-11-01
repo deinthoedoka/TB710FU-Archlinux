@@ -1,0 +1,10 @@
+[Unit]
+Description=TB710FU backlight/login watcher (diagnostic)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/tb-display-watch
+
+[Install]
+WantedBy=multi-user.target

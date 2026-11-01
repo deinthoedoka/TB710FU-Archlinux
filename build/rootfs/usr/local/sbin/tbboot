@@ -1,0 +1,55 @@
+#!/bin/sh
+# tbboot [zui|arch|status]
+# Switch the kShimC boot menu default by replacing boot_a with the pre-packed
+# variant for that system, then reboot. Replaces the Mac-only tools/mac/tbboot
+# from the SteamOS setup: on Arch everything needed is local, under /boot/tbboot.
+#
+#   /boot/tbboot/boot_zui.img   packed boot_a whose menu default is ZUXOS (GKI)
+#   /boot/tbboot/boot_arch.img  packed boot_a whose menu default is Arch
+#   /boot/tbboot/*.sha256       expected digests, written when the images were installed
+#
+# boot_a is found by GPT partition name (mainline Linux has no /dev/block/by-name).
+set -e
+DIR=/boot/tbboot
+find_part() {
+	for b in /sys/class/block/sd*; do
+		grep -q "^PARTNAME=$1$" "$b/uevent" 2>/dev/null && { echo "/dev/$(basename "$b")"; return 0; }
+	done
+	return 1
+}
+BOOT=$(find_part boot_a) || { echo "tbboot: no boot_a partition found"; exit 1; }
+
+status() {
+	cur=$(sha256sum "$BOOT" 2>/dev/null | cut -d' ' -f1) || { echo "cannot read $BOOT (need root)"; return 1; }
+	for v in zui arch; do
+		[ -f "$DIR/boot_$v.img.sha256" ] || continue
+		exp=$(cut -d' ' -f1 "$DIR/boot_$v.img.sha256")
+		[ "$cur" = "$exp" ] && { echo "boot_a = $v variant ($cur)"; return 0; }
+	done
+	echo "boot_a = unknown image ($cur) - not one of our packed variants"
+}
+
+install_variant() {
+	v=$1
+	img="$DIR/boot_$v.img"
+	[ -f "$img" ] || { echo "tbboot: $img missing"; exit 1; }
+	exp=$(cut -d' ' -f1 "$img.sha256" 2>/dev/null) || { echo "tbboot: $img.sha256 missing"; exit 1; }
+	got=$(sha256sum "$img" | cut -d' ' -f1)
+	[ "$got" = "$exp" ] || { echo "tbboot: source image digest mismatch ($got != $exp), refusing"; exit 1; }
+	cur=$(sha256sum "$BOOT" | cut -d' ' -f1)
+	if [ "$cur" = "$exp" ]; then echo "boot_a already = $v, nothing to do"; exit 0; fi
+	size=$(stat -c%s "$img")
+	echo "writing $img ($size bytes) -> $BOOT"
+	dd if="$img" of="$BOOT" bs=4M conv=fsync status=none
+	back=$(head -c "$size" "$BOOT" | sha256sum | cut -d' ' -f1)
+	[ "$back" = "$exp" ] || { echo "tbboot: READ-BACK MISMATCH, not rebooting"; exit 1; }
+	echo "verified ($back); rebooting into $v"
+	sync
+	exec reboot
+}
+
+case "${1:-status}" in
+	status) status ;;
+	zui|arch) install_variant "$1" ;;
+	*) echo "usage: tbboot [zui|arch|status]"; exit 1 ;;
+esac

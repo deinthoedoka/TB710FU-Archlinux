@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=自动亮度
+Name[zh_CN]=自动亮度
+GenericName=自动亮度开关
+Comment=点击切换：根据环境光自动调节屏幕亮度
+Exec=/usr/local/bin/tb-als toggle
+Icon=video-display-brightness
+Terminal=false
+Categories=Settings;
+Keywords=自动亮度;亮度;als;brightness;
+X-KDE-StartupNotify=false

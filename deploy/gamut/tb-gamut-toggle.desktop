@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=色域切换（准确 / 鲜艳）
+Name[en]=Color Gamut Switch
+Comment=在面板原生广色域与 sRGB 准确色域之间切换
+Exec=/usr/local/bin/tb-gamut toggle
+Icon=preferences-desktop-color
+Terminal=false
+Categories=System;Settings;
+Keywords=color;gamut;icc;srgb;p3;色域;色彩;鲜艳;
