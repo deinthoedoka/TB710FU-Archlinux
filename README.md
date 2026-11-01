@@ -9,7 +9,9 @@ volume keys at every boot, and neither side touches the other.
 **Supported hardware**: TB710FU (Xiaoxin Pad Pro GT, SM8650 / 12 GB / 256 GB) with an
 unlocked bootloader only. Do not flash this on any other device.
 
-> Docs in `docs/` and `release/README.md` are currently Chinese-only.
+> The install guide ([docs/INSTALL.md](docs/INSTALL.md)) and the prebuilt-release guide
+> ([release/README.md](release/README.md)) are bilingual (English + 简体中文); the other
+> docs in `docs/` are currently Chinese-only.
 
 ---
 

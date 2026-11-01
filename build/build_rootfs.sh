@@ -14,7 +14,7 @@
 #   BASE_TARBALL  ArchLinuxARM-aarch64 tarball (downloaded if missing)
 #   MODULES_TAR   modules-7.2.6-tb710fu.tar
 #   FWDIR         firmware tree (/usr/lib/firmware layout)
-#   SSH_PUBKEY    key for root + the tb user
+#   SSH_PUBKEY    key for root and the alarm user
 #   BOOTDIR       dir with boot_zui.img / boot_arch.img (optional, enables tbboot)
 #
 # The aarch64 pacman runs under qemu-user-static (binfmt). Check with:

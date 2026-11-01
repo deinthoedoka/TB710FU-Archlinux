@@ -133,7 +133,8 @@ third_party/ hexagonrpc 源码与传感器配置
 
 ## 快速开始
 
-> 完整步骤（含分区、NBD 安装、UFS 写入、风险点）见 [docs/INSTALL.md](docs/INSTALL.md)。
+> 完整步骤（含分区、NBD 安装、UFS 写入、风险点）见
+> [docs/INSTALL.zh-CN.md](docs/INSTALL.zh-CN.md)（也有英文版 docs/INSTALL.md）。
 > 刷写 `boot_a` 是设备写入，务必先读完再动手。
 
 1. **准备**：解锁 Bootloader；用 EDL 全分区回读一份备份；准备一台 Linux/WSL2 构建机。
@@ -151,8 +152,8 @@ third_party/ hexagonrpc 源码与传感器配置
 
 **不想自己编译**：下载 [Release](https://github.com/deinthoedoka/TB710FU-Archlinux/releases)
 里的 `Image`、dtb、`kShimC.bin`、打包器和无固件 rootfs，按
-[release/README.md](release/README.md) 用你自己的 `boot_a` 打包即可，不需要交叉编译环境。
-Release 不包含能直接刷的 boot 镜像，也不包含厂商固件——原因见该页。
+[release/README.zh-CN.md](release/README.zh-CN.md) 用你自己的 `boot_a` 打包即可，不需要
+交叉编译环境。Release 不包含能直接刷的 boot 镜像，也不包含厂商固件——原因见该页。
 
 ## 已知问题
 
@@ -180,7 +181,7 @@ gh release create vX.Y \
 
 按 `release/make-image.sh` 重新生成时，分卷数量可能变化，以 `out-release/` 里实际文件为准。
 **不要**上传 `boot_arch.img`：`boot_a` 必须用每个人自己的原厂镜像打包，原因见
-[release/README.md](release/README.md)。
+[release/README.zh-CN.md](release/README.zh-CN.md)。
 
 ## 仓库里没有什么
 

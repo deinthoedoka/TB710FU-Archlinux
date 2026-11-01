@@ -1,66 +1,74 @@
-# 预构建产物（不想自己编译时用这页）
+<p align="right"><b>English</b> · <a href="README.zh-CN.md">简体中文</a></p>
 
-Release 里发布的是“只缺你自己的东西”的半成品：我们的内核、菜单、打包器、模块和一份
-**不含厂商固件**的 Arch rootfs。原厂 `boot_a.img` 和固件必须来自你自己的设备——这既是
-版权要求，也保证 ZUXOS 那一路的内核和你的 vendor 模块匹配。
+# Prebuilt release artifacts (use this page if you don't want to build)
 
-这样你不用编译，但省不掉 EDL 备份（刷机前本来也必须做）。
+What the Release ships is a half-finished product that is "missing only your own
+parts": our kernel, boot menu, packer, modules, and an Arch rootfs **without vendor
+firmware**. The stock `boot_a.img` and the firmware must come from your own device —
+that is both a licensing requirement and the guarantee that the ZUXOS-side kernel
+matches your vendor modules.
 
-## Release 资产
+This saves you the build, but not the EDL backup (you need that before flashing
+anyway).
 
-| 文件 | 作用 |
+## Release assets
+
+| File | Purpose |
 | --- | --- |
-| `Image` | Arch 内核（7.2.6-tb710fu，含全部修复） |
-| `sm8650-lenovo-tb710fu-kshim.dtb` | 设备树 |
-| `kShimC.bin` | 开机菜单 |
-| `MultiBootKernelPatcher` | 双内核打包器 |
-| `modules-7.2.6-tb710fu.tar` | 内核模块（与 `Image` 同一构建） |
-| `arch-nbd-base.img.zst.part00…` | 安装用 rootfs（MBR + ext4，**无厂商固件**） |
-| `SHA256SUMS` | 全部文件的校验和 |
+| `Image` | Arch kernel (7.2.6-tb710fu, with all fixes) |
+| `sm8650-lenovo-tb710fu-kshim.dtb` | Device tree |
+| `kShimC.bin` | Boot menu |
+| `MultiBootKernelPatcher` | Dual-kernel boot packer |
+| `modules-7.2.6-tb710fu.tar` | Kernel modules (same build as `Image`) |
+| `arch-nbd-base.img.zst.part00…` | Rootfs for installing (MBR + ext4, **no vendor firmware**) |
+| `SHA256SUMS` | Checksums for every file |
 
-本次构建的体积：`Image` 44 MB、dtb 138 KB、`kShimC.bin` 4 MB、打包器 828 KB、模块 92 MB；
-rootfs 原始 10 GiB，压缩后 3.38 GiB，分两卷（1.9 GB + 1.6 GB）。产物已经生成在仓库的
-`out-release/`（被 `.gitignore` 排除，可直接上传 Release）。
+Sizes of this build: `Image` 44 MB, dtb 138 KB, `kShimC.bin` 4 MB, packer 828 KB,
+modules 92 MB; the rootfs is 10 GiB raw / 3.38 GiB compressed, split into two volumes
+(1.9 GB + 1.6 GB). The artifacts are generated into the repository's `out-release/`
+(excluded by `.gitignore`, ready for a direct Release upload).
 
-## 步骤
+## Steps
 
-### 1. EDL 备份
+### 1. EDL backup
 
-按 `docs/INSTALL.md` 第 0 节做全分区回读，至少留下 `boot_a.img`、`super.img`。
-`fastboot` 在这台机器上读不出分区，只能走 9008。
+Do the full-partition read-back as in section 0 of `docs/INSTALL.md`; at minimum keep
+`boot_a.img` and `super.img`. `fastboot` cannot read partitions on this device — EDL
+(9008) is the only way.
 
-### 2. 准备工具
+### 2. Prepare tools
 
-Linux/WSL 上需要 `python3`、`zstd`、`simg2img`、`erofs-utils`、`losetup`：
+Linux/WSL needs `python3`, `zstd`, `simg2img`, `erofs-utils`, `losetup`:
 
 ```bash
 sudo apt-get install -y zstd simg2img erofs-utils python3
 ```
 
-### 3. 下载并校验
+### 3. Download and verify
 
-把 Release 资产放进同一个目录：
+Put the Release assets into one directory:
 
 ```bash
 sha256sum -c SHA256SUMS
 ```
 
-### 4. 提取你自己的固件
+### 4. Extract your own firmware
 
 ```bash
 bash build/collect_firmware.sh /path/to/super.img firmware/
 ```
 
-### 5. 还原并注入 rootfs
+### 5. Restore and inject the rootfs
 
 ```bash
 cat arch-nbd-base.img.zst.part* | zstd -d > arch-nbd.img
 sudo release/inject-firmware.sh arch-nbd.img firmware/
 ```
 
-注入脚本会检查 DTB 要求的每个固件都在；少一个就会报错，不会给你一个“能开机但黑屏”的镜像。
+The injection script checks that every firmware file the DTB asks for is present; if
+one is missing it errors out — you never get a "boots but black screen" image.
 
-### 6. 用你自己的 boot_a 打包
+### 6. Pack with your own boot_a
 
 ```bash
 export TESTKEY=$PWD/build/tools/testkey_rsa4096.pem
@@ -73,54 +81,60 @@ python3 -I build/pack_boot.py \
   --out boot --default zui
 ```
 
-得到 `boot/boot_zui.img`（默认 ZUXOS）和 `boot/boot_arch.img`（默认 Arch）。
+That gives `boot/boot_zui.img` (defaults to ZUXOS) and `boot/boot_arch.img` (defaults
+to Arch).
 
-### 7. 刷写并安装
+### 7. Flash and install
 
 ```bash
 bash flash/flash.sh boot/boot_arch.img
 ```
 
-然后按 `docs/INSTALL.md` 第 3 节：PC 上跑
+Then follow section 3 of the [install guide](../docs/INSTALL.md): on the PC run
 
 ```bash
 python3 build/nbd_server.py --image arch-nbd.img --listen 0.0.0.0 --port 10809
 ```
 
-平板从菜单进 Arch，等它拿到 `172.16.42.x` 后（镜像里没有预置 SSH 公钥，用 alarm 登录）：
+Boot Arch from the tablet's menu; once it has `172.16.42.x` (the image ships no SSH
+public keys — log in as `alarm`):
 
 ```bash
 scp build/install_ufs.sh alarm@172.16.42.<x>:/tmp/
-ssh alarm@172.16.42.<x>          # 密码 alarm
+ssh alarm@172.16.42.<x>          # password alarm
 sudo CONFIRM=yes ARCH_START=... USERDATA_LAST=... bash /tmp/install_ufs.sh
 ```
 
-`ARCH_START` / `USERDATA_LAST` 按 `sgdisk -p /dev/sda` 的实际值填，先备份 GPT。
+Fill in `ARCH_START` / `USERDATA_LAST` from the actual `sgdisk -p /dev/sda` output,
+and back up the GPT first.
 
-### 8. 首次登录
+### 8. First login
 
-rootfs 里的账号是 `alarm`，初始密码 `alarm`（`root` 同密码）。**第一件事是改密码**：
+The account in the rootfs is `alarm`, initial password `alarm` (`root` has the same
+password). **The first thing to do is change the passwords**:
 
 ```bash
 passwd
 sudo passwd root
 ```
 
-然后把你的 SSH 公钥装到 root，PC 侧部署才能连：
+Then install your SSH public key for root, so the PC-side deploy can connect:
 
 ```bash
 sudo mkdir -p /root/.ssh && sudo tee -a /root/.ssh/authorized_keys < ~/.ssh/id_ed25519.pub
 sudo chmod 700 /root/.ssh && sudo chmod 600 /root/.ssh/authorized_keys
 ```
 
-之后在 PC 上跑 `deploy/deploy_all.sh <平板IP>`。
+After that run `deploy/deploy_all.sh <tablet-ip>` on the PC.
 
-## 为什么不直接给一个能刷的 boot 镜像
+## Why there is no ready-to-flash boot image
 
-`boot_a` 里除了 Arch，还塞着**你机器上的 ZUXOS 内核**。别人的 ZUXOS 版本不同时，内核和
-vendor 模块可能对不上，菜单进 Android 会黑屏。用每个人自己的 `boot_a` 打包可以完全避免
-这个问题，也不用分发联想的 GKI 内核。
+`boot_a` contains, besides Arch, **your own device's ZUXOS kernel**. With someone
+else's ZUXOS version, the kernel and vendor modules may not match, and the Android
+side of the menu black-screens. Packing from each user's own `boot_a` avoids this
+entirely, and keeps Lenovo's GKI kernel out of distribution.
 
-## 自己构建
+## Building it yourself
 
-见 `build/README.md`；`release/make-image.sh` 就是用来生成这份无固件 rootfs 的脚本。
+See `build/README.md`; `release/make-image.sh` is the script that generates this
+firmware-less rootfs.
