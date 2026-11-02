@@ -95,21 +95,54 @@ install -D -m0755 "$SO" /usr/lib/dri/v4l2_drv_video.so
 ln -sfn v4l2_drv_video.so /usr/lib/dri/msm_drv_video.so
 echo "   /usr/lib/dri/v4l2_drv_video.so <- $(basename "$DRIVER") ($(md5sum < /usr/lib/dri/v4l2_drv_video.so | cut -d' ' -f1))"
 
-say "kernel module hot-swap"
+say "kernel module"
 if [ -n "$KO" ]; then
   MODDIR=/usr/lib/modules/$KVER/kernel/drivers/media/platform/qcom/iris
   [ -f "$MODDIR/qcom-iris.ko" ] || die "no qcom-iris.ko for $KVER - install the kernel modules first"
   [ -f "$KO" ] || die "module not found: $KO"
-  [ -f /root/qcom-iris.ko.bak-pre-va ] || cp "$MODDIR/qcom-iris.ko" /root/qcom-iris.ko.bak-pre-va
-  if fuser /dev/video0 >/dev/null 2>&1; then
-    echo "   !! /dev/video0 is in use (a player is open) - close it if the reload below fails"
+  NEWMD5=$(md5sum < "$KO" | cut -d' ' -f1)
+  CURMD5=$(md5sum < "$MODDIR/qcom-iris.ko" | cut -d' ' -f1)
+  # A half-finished unload wedges the module in "Unloading" forever (the kernel
+  # never completes iris_remove once something interrupted it) and only a reboot
+  # clears it. So: never unload a module that is busy or already going away.
+  if grep -q '^qcom_iris .* Unloading' /proc/modules; then
+    die "qcom_iris is already stuck unloading (see /proc/modules) - reboot the tablet"
   fi
-  install -D -m0644 "$KO" "$MODDIR/qcom-iris.ko"
-  depmod "$KVER"
-  modprobe -r qcom_iris 2>/dev/null || true
-  modprobe qcom_iris || die "could not reload qcom_iris - reboot instead"
+  if [ "$NEWMD5" = "$CURMD5" ]; then
+    echo "   installed module is already this build ($NEWMD5) - nothing to swap"
+  else
+    [ -f /root/qcom-iris.ko.bak-pre-va ] || cp "$MODDIR/qcom-iris.ko" /root/qcom-iris.ko.bak-pre-va
+    install -D -m0644 "$KO" "$MODDIR/qcom-iris.ko"
+    depmod "$KVER"
+    echo "   installed $NEWMD5 (backup: /root/qcom-iris.ko.bak-pre-va)"
+    RELOAD=1
+    if [ "$(cat /sys/module/qcom_iris/refcnt 2>/dev/null || echo 0)" != 0 ]; then
+      echo "   !! module is in use (refcnt=$(cat /sys/module/qcom_iris/refcnt)) - not unloading"
+      RELOAD=0
+    fi
+    if fuser /dev/video0 >/dev/null 2>&1; then
+      echo "   !! /dev/video0 is open (a player or browser is using the VPU) - not unloading"
+      RELOAD=0
+    fi
+    if [ "$RELOAD" = 0 ]; then
+      echo "   the new module loads on the next boot; reboot when convenient"
+    else
+      # timeout: if the unload blocks we would interrupt it here, and an
+      # interrupted unload is exactly what wedges the module. Better to give up
+      # and boot later than to leave the VPU dead until reboot.
+      if timeout 30 modprobe -r qcom_iris; then
+        if modprobe qcom_iris && ! grep -q '^qcom_iris .* Unloading' /proc/modules; then
+          echo "   reloaded"
+        else
+          echo "   !! reload failed - the new module will load on boot"
+        fi
+      else
+        echo "   !! unload timed out (module busy) - reboot to load the new module"
+      fi
+    fi
+  fi
 fi
-[ -e /dev/video0 ] && echo "   /dev/video0 present" || echo "   !! /dev/video0 missing after reload"
+if [ -e /dev/video0 ]; then echo "   /dev/video0 present"; else echo "   !! /dev/video0 missing (module not loaded?)"; fi
 
 say "mpv"
 if command -v mpv >/dev/null; then

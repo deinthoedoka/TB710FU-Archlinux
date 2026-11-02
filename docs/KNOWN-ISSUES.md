@@ -13,6 +13,7 @@
 | 完整 `pacman -Syu` | 会用打包版 `linux-aarch64` 覆盖自编内核，系统无法启动 |
 | `pacman -Syu` 升级 ksystemstats | 会覆盖 GPU 监控插件（`deploy/monitor/`），重跑 `deploy/monitor/deploy_monitor.sh` 重打 |
 | `pacman -Syu` 升级 firefox | 会删掉 `/usr/lib/firefox/defaults/pref/tb710fu-vaapi.js`（VA-API 偏好），重跑 `deploy/vaapi/install.sh` |
+| 热替换 `qcom-iris.ko` 被打断 | 模块会卡在 `Unloading`（`/proc/modules` 里 `refcnt -1`），`iris_remove` 永远完不成，VPU 直到重启都不可用；`deploy/vaapi/install.sh` 已加保护（忙碌不卸、30 秒超时），实在卡住只能重启 |
 | VLC 重装 / 升级 | ALARM 把 VLC 拆成 `vlc-plugin-*` 子包，裸 `vlc` 连 GUI 都起不来；要装 `vlc-plugin-ffmpeg` 等才会用 VA-API |
 | flatpak 应用（含 flatpak 版 VLC） | 沙箱自带 `/usr/lib/dri`，永远看不到宿主的 VA-API 驱动；硬解/硬编要装原生包 |
 | Steam 客户端 / QQ / 微信二进制 | 版权原因不随仓库分发，需自行下载 |

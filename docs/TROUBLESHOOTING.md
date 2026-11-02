@@ -90,6 +90,9 @@ modinfo -F vermagic /usr/lib/modules/$(uname -r)/kernel/drivers/media/platform/q
 - flatpak 版永远不行（沙箱看不到宿主 `/usr/lib/dri`），换原生包。
 - 采样时视频窗口必须在最前：后台/被遮挡的播放器会被节流，VPU 状态读出来是
   `suspended`，看起来像没硬解。
+- `vainfo` 报 **"no Iris stateful H264 decoder found"** 且 `/proc/modules` 里
+  `qcom_iris ... Unloading`：模块卸到一半被打断了（`modprobe -r` 期间中断/超时），
+  `iris_remove` 卡死，用户态无法恢复，只能重启。
 
 ## 充电显示“放电”
 

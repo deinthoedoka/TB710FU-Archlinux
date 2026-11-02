@@ -108,6 +108,21 @@ rm /usr/lib/firefox/defaults/pref/tb710fu-vaapi.js
 # mpv: hwdec=v4l2m2m-copy still works without the driver
 ```
 
+## Hazards when swapping the module
+
+`install.sh` never unloads a busy module any more, because an **interrupted**
+unload is unrecoverable: the kernel leaves `qcom_iris` in state `Unloading`
+(`/proc/modules`, `refcnt = -1`) and `iris_remove` never completes. The module
+then cannot be removed or reloaded and the VPU stays dead — `vainfo` reports
+"no Iris stateful H264 decoder found" — until the tablet reboots. If you see
+that state, reboot; there is no way to clear it from userspace.
+
+The script therefore: compares the installed module's checksum first (no swap if
+identical), refuses while `refcnt != 0` or `/dev/video0` is open, and gives the
+unload a 30 s timeout. Any of those leave the new file installed for the next
+boot instead of half-unloading. If you are unsure, just install the module and
+reboot.
+
 ## Maintenance
 
 - A `pacman -Su firefox` update deletes `tb710fu-vaapi.js` — re-run `install.sh`.
