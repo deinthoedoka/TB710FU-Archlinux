@@ -78,7 +78,10 @@ if [ -z "$DRIVER" ]; then
   DRIVER=/root/v4l2_drv_video.so
   # -T/-t so a blocked GitHub stalls for 40 s at most instead of hanging forever
   wget -q -T 20 -t 2 -O "$DRIVER" "$REL/v4l2_drv_video.so" \
-    || { rm -f "$DRIVER"; die "download failed - pass --driver with a local copy (or run build_driver.sh)"; }
+    || { rm -f "$DRIVER"; die "download failed. GitHub is often unreachable from CN
+   networks: fetch the asset on a PC and pass it as --driver (or run
+   deploy/vaapi/deploy_vaapi.sh from the PC, which copies it over). build_driver.sh
+   also works if you can get the source tarball onto the tablet."; }
 fi
 [ -f "$DRIVER" ] || die "driver not found: $DRIVER"
 

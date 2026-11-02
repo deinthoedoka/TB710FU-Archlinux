@@ -37,6 +37,10 @@ Or on the tablet:
 bash install.sh --driver v4l2_drv_video.so --ko qcom-iris.ko
 ```
 
+GitHub is unreachable from many CN networks, so the tablet's automatic download
+fallback usually fails — pass the files (the PC path above copies them over) or run
+`build_driver.sh` where the source tarball is already available.
+
 `--driver` also accepts radxa's `.deb`. Note its payload lands in
 `/usr/lib/aarch64-linux-gnu/dri/` (Debian multiarch) — Arch's libva only looks in
 `/usr/lib/dri`, so the script unpacks and installs it there. Omit `--ko` to keep
