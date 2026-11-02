@@ -102,26 +102,27 @@ verified file-by-file against the reference build tree.
 
 ```bash
 cp /root/qcom-iris.ko.bak-pre-va /usr/lib/modules/7.2.6-tb710fu/kernel/drivers/media/platform/qcom/iris/qcom-iris.ko
-depmod 7.2.6-tb710fu && modprobe -r qcom_iris; modprobe qcom_iris
+depmod 7.2.6-tb710fu          # then reboot: the module is never unloaded at runtime
 rm /usr/lib/dri/v4l2_drv_video.so /usr/lib/dri/msm_drv_video.so
 rm /usr/lib/firefox/defaults/pref/tb710fu-vaapi.js
+# the modprobe.d rule can stay: it only guards against unloading qcom_iris
 # mpv: hwdec=v4l2m2m-copy still works without the driver
 ```
 
-## Hazards when swapping the module
+## Module swaps are install-and-reboot
 
-`install.sh` never unloads a busy module any more, because an **interrupted**
-unload is unrecoverable: the kernel leaves `qcom_iris` in state `Unloading`
-(`/proc/modules`, `refcnt = -1`) and `iris_remove` never completes. The module
-then cannot be removed or reloaded and the VPU stays dead — `vainfo` reports
-"no Iris stateful H264 decoder found" — until the tablet reboots. If you see
-that state, reboot; there is no way to clear it from userspace.
+`qcom_iris` is **never unloaded at runtime**. An interrupted `modprobe -r` — an SSH
+timeout, a killed process, a busy VPU — leaves `delete_module` waiting forever: the
+module sits in state `Unloading` with `refcnt = -1` (`/proc/modules`), `iris_remove`
+never returns, and the unkillable task then blocks **shutdown**. The tablet stops at
+a black screen with white text and only a long power-button press recovers it. The
+VPU also stays dead until reboot (`vainfo`: "no Iris stateful H264 decoder found").
 
-The script therefore: compares the installed module's checksum first (no swap if
-identical), refuses while `refcnt != 0` or `/dev/video0` is open, and gives the
-unload a 30 s timeout. Any of those leave the new file installed for the next
-boot instead of half-unloading. If you are unsure, just install the module and
-reboot.
+`/etc/modprobe.d/qcom-iris-noremove.conf` makes that impossible:
+`remove qcom_iris /bin/false` fails the command in userspace, before the kernel is
+touched. `install.sh` writes it before it touches the module. A module update is
+therefore: install the `.ko`, reboot. (A deliberate bypass would be
+`modprobe -r -i qcom_iris` — that is exactly the hazard, don't.)
 
 ## Maintenance
 

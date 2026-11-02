@@ -28,8 +28,10 @@ that key (`install_payload.sh` does this if you pass `SSH_PUBKEY=` during the ro
 ## Notes
 
 - `deploy_all.sh` does not touch `boot_a`. Kernel changes come from the image built in `build/`.
-- `vaapi` is not part of `deploy_all.sh`: it needs the Release assets (or a build) and may
-  hot-swap `qcom-iris.ko`. Run `deploy/vaapi/deploy_vaapi.sh` when you want it.
+- `vaapi` is not part of `deploy_all.sh`: it needs the Release assets (or a build). It
+  installs `qcom-iris.ko` for the **next boot** — the module is never unloaded at runtime
+  (an interrupted unload blocks shutdown), so a module update means one reboot.
+  Run `deploy/vaapi/deploy_vaapi.sh` when you want it.
 - Everything is idempotent; re-running replaces files and restarts the affected units.
 - `system/install_system_extras.sh` needs `cc` (gcc) on the tablet for the volume-key helper.
   Without it the rest still installs.

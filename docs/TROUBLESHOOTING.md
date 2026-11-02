@@ -34,6 +34,35 @@ fastboot reboot
 `deploy/diagnostics/tb-display-watch` 会记录背光、DPMS 和帧计数，用来确认是
 “面板没上电”还是“没有帧提交”。
 
+## 关机 / 重启卡住（黑底白字，一直不动）
+
+关机流程在等一个**杀不掉的进程**。最常见的原因是 `qcom_iris` 被 `modprobe -r`
+卸到一半：内核把它标成 `Unloading`（`/proc/modules` 里 `refcnt -1`），
+`iris_remove` 永远返回不了，这个进程不可中断，`systemd-shutdown` 就卡在它上面。
+
+这时网络、显示和大部分服务都已经停了，没有软件办法：
+
+1. **长按电源键 10–15 秒**强制断电，松手后等两秒再短按开机。
+   文件系统有 journal，正常情况不会丢数据。
+2. 开机后确认恢复：
+
+   ```bash
+   grep Unloading /proc/modules    # 应无输出
+   vainfo --display drm --device /dev/dri/renderD128 | head -3
+   ```
+
+3. 如果开不了机、只能进 fastboot（A/B 重试计数用完了），
+   `fastboot set_active a && fastboot reboot`，之后启动一次 ZUXOS 把计数复位。
+
+防复发：这台机器上 `qcom_iris` **不允许在运行时卸载**。
+`/etc/modprobe.d/qcom-iris-noremove.conf` 里的 `remove qcom_iris /bin/false`
+让 `modprobe -r qcom_iris` 直接在用户态失败、根本不进内核。换模块就是装好
+`.ko` 然后重启（`deploy/vaapi/install.sh` 现在只做这一件事）。
+
+> 如果极端情况下 SSH 还活着（很少见），可以先 `echo s > /proc/sysrq-trigger`
+> 把脏页刷盘，再 `echo b > /proc/sysrq-trigger` 硬重启，比长按电源键干净一点。
+> `/proc/sys/kernel/sysrq` 为 0 时这两条无效。
+
 ## 没有声音
 
 ```bash
@@ -92,7 +121,9 @@ modinfo -F vermagic /usr/lib/modules/$(uname -r)/kernel/drivers/media/platform/q
   `suspended`，看起来像没硬解。
 - `vainfo` 报 **"no Iris stateful H264 decoder found"** 且 `/proc/modules` 里
   `qcom_iris ... Unloading`：模块卸到一半被打断了（`modprobe -r` 期间中断/超时），
-  `iris_remove` 卡死，用户态无法恢复，只能重启。
+  `iris_remove` 卡死，用户态无法恢复，**而且会让下次关机卡住**——处置见
+  [关机 / 重启卡住](#关机--重启卡住黑底白字一直不动)。现在
+  `/etc/modprobe.d/qcom-iris-noremove.conf` 已禁止运行时卸载。
 
 ## 充电显示“放电”
 

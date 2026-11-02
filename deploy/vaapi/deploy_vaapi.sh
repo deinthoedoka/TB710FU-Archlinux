@@ -17,7 +17,8 @@ SSH_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
           -o BatchMode=yes -o ConnectTimeout=10)
 
 ssh "${SSH_OPTS[@]}" root@"$H" 'rm -rf /root/tb-vaapi && mkdir -p /root/tb-vaapi'
-scp "${SSH_OPTS[@]}" "$D/install.sh" "$D/hwdec-selfcheck.sh" "$D/build_driver.sh" root@"$H":/root/tb-vaapi/
+scp "${SSH_OPTS[@]}" "$D/install.sh" "$D/hwdec-selfcheck.sh" "$D/build_driver.sh" \
+  "$D/../system/qcom-iris-noremove.conf" root@"$H":/root/tb-vaapi/
 
 ARGS=""
 if [ -n "${1:-}" ] && [ -f "${1:-}" ]; then

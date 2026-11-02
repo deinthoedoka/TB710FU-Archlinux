@@ -2,7 +2,8 @@
 # install.sh - VA-API hardware decode/encode on a running TB710FU Arch install.
 #
 # Installs the qcom-va-driver (VA-API backend for the Iris VPU), optionally
-# hot-swaps a VA-API-ready qcom-iris.ko, and configures mpv / Firefox / VLC.
+# installs a VA-API-ready qcom-iris.ko for the next boot, and configures
+# mpv / Firefox / VLC.
 # The iris kernel patches live in build/patches/000[2-6]-media-iris-*.patch and
 # are baked into kernels built by build/build_kernel.sh; a prebuilt module is
 # attached to the GitHub release.
@@ -16,10 +17,13 @@
 # present, else downloads the Release asset.
 # --ko without a value is not possible: omit it to keep the installed module,
 # which must already contain the iris VA-API patches or decode fails after one
-# frame with "Failed to end picture decode".
+# frame with "Failed to end picture decode". A supplied module is installed and
+# loads on the NEXT BOOT - qcom_iris is never unloaded at runtime, because an
+# interrupted unload wedges it and then blocks shutdown (see the modprobe.d
+# rule this script installs).
 set -euo pipefail
 
-DRIVER="" KO=""
+DRIVER="" KO="" NEEDS_REBOOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --driver|--deb) DRIVER=$2; shift 2 ;;
@@ -96,50 +100,43 @@ ln -sfn v4l2_drv_video.so /usr/lib/dri/msm_drv_video.so
 echo "   /usr/lib/dri/v4l2_drv_video.so <- $(basename "$DRIVER") ($(md5sum < /usr/lib/dri/v4l2_drv_video.so | cut -d' ' -f1))"
 
 say "kernel module"
+# qcom_iris must never be unloaded at runtime. If a `modprobe -r` is interrupted
+# (SSH timeout, killed process, busy VPU) the kernel leaves the module in state
+# "Unloading" with refcnt -1 (/proc/modules); delete_module then never returns,
+# the unkillable task blocks the next shutdown at a black screen with white text,
+# and only a power cycle clears it. This rule makes `modprobe -r qcom_iris` fail
+# in userspace, before it reaches the kernel. Installed before the .ko so no
+# later step can ever trigger the wedge.
+GUARD=$(dirname "$0")/qcom-iris-noremove.conf
+if [ -f "$GUARD" ]; then
+  install -D -m0644 "$GUARD" /etc/modprobe.d/qcom-iris-noremove.conf
+else
+  mkdir -p /etc/modprobe.d
+  { echo '# TB710FU: never unload qcom_iris - an interrupted unload wedges it in'
+    echo '# "Unloading"/refcnt -1 and then blocks shutdown. Bypass (don'\''t): -i'
+    echo 'remove qcom_iris /bin/false'
+  } > /etc/modprobe.d/qcom-iris-noremove.conf
+fi
+echo "   /etc/modprobe.d/qcom-iris-noremove.conf in place (no runtime unload)"
+
 if [ -n "$KO" ]; then
   MODDIR=/usr/lib/modules/$KVER/kernel/drivers/media/platform/qcom/iris
   [ -f "$MODDIR/qcom-iris.ko" ] || die "no qcom-iris.ko for $KVER - install the kernel modules first"
   [ -f "$KO" ] || die "module not found: $KO"
   NEWMD5=$(md5sum < "$KO" | cut -d' ' -f1)
   CURMD5=$(md5sum < "$MODDIR/qcom-iris.ko" | cut -d' ' -f1)
-  # A half-finished unload wedges the module in "Unloading" forever (the kernel
-  # never completes iris_remove once something interrupted it) and only a reboot
-  # clears it. So: never unload a module that is busy or already going away.
-  if grep -q '^qcom_iris .* Unloading' /proc/modules; then
-    die "qcom_iris is already stuck unloading (see /proc/modules) - reboot the tablet"
-  fi
   if [ "$NEWMD5" = "$CURMD5" ]; then
-    echo "   installed module is already this build ($NEWMD5) - nothing to swap"
+    echo "   installed module is already this build ($NEWMD5) - nothing to do"
   else
     [ -f /root/qcom-iris.ko.bak-pre-va ] || cp "$MODDIR/qcom-iris.ko" /root/qcom-iris.ko.bak-pre-va
     install -D -m0644 "$KO" "$MODDIR/qcom-iris.ko"
     depmod "$KVER"
     echo "   installed $NEWMD5 (backup: /root/qcom-iris.ko.bak-pre-va)"
-    RELOAD=1
-    if [ "$(cat /sys/module/qcom_iris/refcnt 2>/dev/null || echo 0)" != 0 ]; then
-      echo "   !! module is in use (refcnt=$(cat /sys/module/qcom_iris/refcnt)) - not unloading"
-      RELOAD=0
+    if grep -q '^qcom_iris .* Unloading' /proc/modules; then
+      die "qcom_iris is stuck in Unloading (/proc/modules) - reboot: the new module loads then"
     fi
-    if fuser /dev/video0 >/dev/null 2>&1; then
-      echo "   !! /dev/video0 is open (a player or browser is using the VPU) - not unloading"
-      RELOAD=0
-    fi
-    if [ "$RELOAD" = 0 ]; then
-      echo "   the new module loads on the next boot; reboot when convenient"
-    else
-      # timeout: if the unload blocks we would interrupt it here, and an
-      # interrupted unload is exactly what wedges the module. Better to give up
-      # and boot later than to leave the VPU dead until reboot.
-      if timeout 30 modprobe -r qcom_iris; then
-        if modprobe qcom_iris && ! grep -q '^qcom_iris .* Unloading' /proc/modules; then
-          echo "   reloaded"
-        else
-          echo "   !! reload failed - the new module will load on boot"
-        fi
-      else
-        echo "   !! unload timed out (module busy) - reboot to load the new module"
-      fi
-    fi
+    echo "   loads on the next boot (qcom_iris is never unloaded at runtime)"
+    NEEDS_REBOOT=1
   fi
 fi
 if [ -e /dev/video0 ]; then echo "   /dev/video0 present"; else echo "   !! /dev/video0 missing (module not loaded?)"; fi
@@ -207,4 +204,7 @@ else
   echo "   install libva-utils for vainfo"
 fi
 echo
+if [ "$NEEDS_REBOOT" = 1 ]; then
+  echo "NOTE: reboot to load the installed qcom-iris.ko (module updates are install-and-reboot)."
+fi
 echo "done. Play something and run: tb-hwdec-check   (keep the video window visible!)"
