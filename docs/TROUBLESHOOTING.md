@@ -63,6 +63,10 @@ fastboot reboot
 > 把脏页刷盘，再 `echo b > /proc/sysrq-trigger` 硬重启，比长按电源键干净一点。
 > `/proc/sys/kernel/sysrq` 为 0 时这两条无效。
 
+这台机器的 DT 没有把 SoC 看门狗接出来：`qcom_wdt` / `pm8916_wdt` 能载入，但
+`/sys/class/watchdog/` 是空的、也没有 `/dev/watchdog`，所以 **`ShutdownWatchdogSec=`
+用不了**，卡住的关机只能靠长按电源键。
+
 ## 没有声音
 
 ```bash
