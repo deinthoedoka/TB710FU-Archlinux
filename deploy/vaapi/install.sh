@@ -159,6 +159,10 @@ if [ -d /usr/lib/firefox ]; then
 // Re-created by deploy/vaapi/install.sh; a pacman firefox update removes it.
 pref("media.ffmpeg.vaapi.enabled", true);
 pref("media.hardware-video-decoding.force-enabled", true);
+// Keep decoded surfaces on the GPU. iris exports dmabufs and EGL imports them,
+// so Firefox does not copy every frame back through the CPU (matters at 4K60).
+pref("media.ffmpeg.vaapi.force-surface-zero-copy", true);
+pref("gfx.blacklist.hw-video-zero-copy", false);
 EOF
   echo "   /usr/lib/firefox/defaults/pref/tb710fu-vaapi.js written (restart firefox)"
 fi

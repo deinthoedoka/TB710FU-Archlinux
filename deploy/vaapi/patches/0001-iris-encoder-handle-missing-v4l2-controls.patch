@@ -1,0 +1,66 @@
+--- a/src/internal.hpp
++++ b/src/internal.hpp
+@@ -34,7 +34,10 @@
+ }
+ struct Error : std::runtime_error {
+     VAStatus status;
+-    Error(VAStatus s, const std::string &m) : std::runtime_error(m), status(s) {}
++    Error(VAStatus s, const std::string &m) : std::runtime_error(m), status(s) {
++        if (std::getenv("IRIS_VAAPI_DEBUG"))
++            std::fprintf(stderr, "iris-vaapi: ERROR %s (status %d)\n", m.c_str(), s);
++    }
+ };
+ inline void check(bool b, const char *m, VAStatus s = VA_STATUS_ERROR_OPERATION_FAILED) {
+     if (!b)
+--- a/src/encoder.cpp
++++ b/src/encoder.cpp
+@@ -346,6 +346,7 @@
+     VASurfaceID last_reference = VA_INVALID_SURFACE;
+     EncodeSettings settings;
+     unsigned entropy;
++    bool has_force_key_frame = false;
+     std::array<int, 3> filter{};
+     std::vector<std::shared_ptr<Memory>> capture, raw;
+ 
+@@ -639,10 +640,28 @@
+     }
+     e.control(V4L2_CID_MPEG_VIDEO_B_FRAMES, 0);
+     // Keyframes follow VA picture requests; prevent autonomous periodic IDRs.
+-    e.control(V4L2_CID_MPEG_VIDEO_GOP_SIZE, std::numeric_limits<int>::max());
++    // Iris has no FORCE_KEY_FRAME control, so when it is missing ask the
++    // firmware for periodic IDRs at the stream's intra period instead.
++    v4l2_queryctrl fk{};
++    fk.id = V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME;
++    e.has_force_key_frame =
++        call(e.fd, VIDIOC_QUERYCTRL, &fk) == 0 && !(fk.flags & V4L2_CTRL_FLAG_DISABLED);
++    int intra_period = int(s.hevc ? s.hevc_sequence.intra_period : s.sequence.intra_period);
++    if (intra_period <= 0)
++        intra_period = 60;
++    e.control(V4L2_CID_MPEG_VIDEO_GOP_SIZE,
++              e.has_force_key_frame ? std::numeric_limits<int>::max() : intra_period);
+     e.control(V4L2_CID_MPEG_VIDEO_HEADER_MODE, V4L2_MPEG_VIDEO_HEADER_MODE_JOINED_WITH_1ST_FRAME);
+     e.control(V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
+-    e.control(V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE, s.rate_control != VA_RC_CQP);
++    // Iris does not implement V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE (the
++    // control is unknown -> EINVAL, which aborted every encode). It still
++    // honours BITRATE_MODE/BITRATE, so set the switch only if it exists.
++    {
++        v4l2_queryctrl rc{};
++        rc.id = V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE;
++        if (call(e.fd, VIDIOC_QUERYCTRL, &rc) == 0 && !(rc.flags & V4L2_CTRL_FLAG_DISABLED))
++            e.control(rc.id, s.rate_control != VA_RC_CQP);
++    }
+     if (s.rate_control != VA_RC_CQP) {
+         e.control(V4L2_CID_MPEG_VIDEO_BITRATE_MODE, s.rate_control == VA_RC_CBR
+                                                         ? V4L2_MPEG_VIDEO_BITRATE_MODE_CBR
+@@ -857,8 +876,8 @@
+                       qp);
+             e.current_qp = qp;
+         }
+-        if (intra && e.token)
+-            e.control(V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME, 0);
++        if (intra && e.token && e.has_force_key_frame)
++            e.control(V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME, 1);
+         QueueBuffer q(OUTPUT, index, e.import);
+         if (e.import)
+             q.plane.m.fd = memory->fd;

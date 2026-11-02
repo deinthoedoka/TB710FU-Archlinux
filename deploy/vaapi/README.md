@@ -9,9 +9,28 @@ VA-API backend on top of the same V4L2 device. That backend is
 Verified on SM8650 / 7.2.6-tb710fu: `vainfo` lists H264 (all entry points), HEVC
 Main + Main10, VP9 profile 0/2 and AV1 **decode**, plus H264/HEVC **encode**. A
 4K60 HEVC 56 Mbps file decodes at ~227 fps (3.8x realtime). mpv runs zero-copy
-(`hwdec=vaapi`), Firefox and native VLC hardware-decode, and OBS lists
-"FFmpeg VAAPI H.264 / HEVC" encoders (AV1 encode is not implemented by the
-firmware — expected).
+(`hwdec=vaapi`), Firefox and native VLC hardware-decode, and OBS records with
+hardware H.264 / HEVC (AV1 encode is not implemented by the firmware — expected;
+the encoder needs the driver patches below).
+
+## Hardware encoding needs patched driver sources
+
+Upstream radxa v1.1.1 sets two V4L2 controls that the iris encoder does not
+implement — `V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE` and
+`V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME`. The first `VIDIOC_S_CTRL` returns EINVAL
+and aborts the whole encode, which in OBS shows up as
+`vaapi_encode: Error encoding: Input/output error` a few seconds into recording.
+
+`patches/0001-iris-encoder-handle-missing-v4l2-controls.patch` queries both
+controls before using them and, because iris cannot be asked to force an IDR,
+asks the firmware for periodic keyframes through `GOP_SIZE` using the stream's
+intra period. `build_driver.sh` applies it automatically. Verified: 30 s 720p
+and 8 s 3200×2000 H.264 CBR encodes complete with no errors and produce valid
+keyframe intervals.
+
+The prebuilt `v4l2_drv_video.so` from Release v1.2 is the **unpatched** upstream
+build, and so is radxa's `.deb`: encoding with either of them fails. Use the
+release asset from v1.3 or build on the tablet.
 
 ## Two pieces are needed
 
@@ -73,7 +92,7 @@ fine.
 On the tablet (native aarch64 — the CDSP subprojects make cross builds painful):
 
 ```bash
-bash build_driver.sh                # downloads the tag tarball, meson + ninja
+bash build_driver.sh                # downloads the tag tarball, applies patches/, meson + ninja
 bash install.sh --driver /root/v4l2_drv_video.so
 ```
 

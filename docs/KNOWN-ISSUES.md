@@ -9,6 +9,7 @@
 | 摄像头 | 无 Linux 驱动 |
 | 蜂窝网络 / GPS | 本机型无 modem |
 | VA-API **AV1 编码** | 固件只提供 AV1 解码；OBS 里没有 AV1 硬件编码器是预期行为（H264/HEVC 编码可用） |
+| VA-API **H264/HEVC 编码** | 必须用打过 `deploy/vaapi/patches/` 的驱动。上游 radxa v1.1.1 / Release v1.2 的 `v4l2_drv_video.so` 会在几秒后报 `vaapi_encode: Error encoding: 输入/输出错误`（iris 没有它强设的两个控件） |
 | Android 容器（Waydroid） | 需要内核 `CONFIG_PSI`；当前内核未开，容器会在约 16 秒后被杀 |
 | 完整 `pacman -Syu` | 会用打包版 `linux-aarch64` 覆盖自编内核，系统无法启动 |
 | `pacman -Syu` 升级 ksystemstats | 会覆盖 GPU 监控插件（`deploy/monitor/`），重跑 `deploy/monitor/deploy_monitor.sh` 重打 |

@@ -38,8 +38,16 @@ fi
 rm -rf "$OUTDIR/src"; mkdir -p "$OUTDIR/src"
 tar -xf "$SRC" -C "$OUTDIR/src" --strip-components=1
 
-say "meson setup (cdsp_vpp/vulkan_vpp off)"
+say "patches (iris lacks two controls the driver sets unconditionally)"
 cd "$OUTDIR/src"
+shopt -s nullglob
+for p in "$(dirname "$0")"/patches/*.patch; do
+  echo "   applying $(basename "$p")"
+  patch -p1 --forward --no-backup-if-mismatch < "$p" || { echo "!! patch failed: $p"; exit 1; }
+done
+shopt -u nullglob
+
+say "meson setup (cdsp_vpp/vulkan_vpp off)"
 rm -rf build
 meson setup build -Dcdsp_vpp=disabled -Dvulkan_vpp=disabled
 ninja -C build

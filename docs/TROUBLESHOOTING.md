@@ -120,6 +120,11 @@ modinfo -F vermagic /usr/lib/modules/$(uname -r)/kernel/drivers/media/platform/q
 - `vainfo` 有输出但播放报 **"Failed to end picture decode"**：内核模块不带
   decode-order 补丁 → 换 `qcom-iris-7.2.6-tb710fu-vaapi.ko`（Release v1.2）或重编内核。
 - 只有 VLC 不行：ALARM 的 VLC 拆包了，`pacman -Q vlc-plugin-ffmpeg` 必须存在。
+- **OBS 录几秒后报 `vaapi_encode: Error encoding: 输入/输出错误`**：装的是未打补丁的
+  驱动。iris 编码器没有 `FRAME_RC_ENABLE` / `FORCE_KEY_FRAME` 两个控件，上游
+  v1.1.1 无条件去设置，EINVAL 直接把编码会话打断。换 Release v1.3 的
+  `v4l2_drv_video.so`，或在平板上跑 `deploy/vaapi/build_driver.sh`
+  （会自动打 `patches/` 里的补丁）。
 - flatpak 版永远不行（沙箱看不到宿主 `/usr/lib/dri`），换原生包。
 - 采样时视频窗口必须在最前：后台/被遮挡的播放器会被节流，VPU 状态读出来是
   `suspended`，看起来像没硬解。
