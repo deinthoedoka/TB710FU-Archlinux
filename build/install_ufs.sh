@@ -97,7 +97,7 @@ cat /mnt/arch/etc/fstab
 # our services and the boot_a variants travel with the copy; make sure they are enabled
 S=/mnt/arch/etc/systemd/system
 mkdir -p $S/multi-user.target.wants $S/display-manager.target.wants $S/display-manager.service.wants
-for u in tb-native-display tb-usb-ncm tb-usb-ncm-watch tb-wifi tb-audio-init tb-adsp-audio-check tb-touch-check; do
+for u in tb-native-display tb-usb-ncm tb-usb-ncm-watch tb-wifi tb-wifi-up tb-audio-init tb-adsp-audio-check tb-touch-check; do
   ln -sfn /etc/systemd/system/$u.service $S/multi-user.target.wants/$u.service
 done
 ln -sfn /etc/systemd/system/tb-native-display.service $S/display-manager.service.wants/tb-native-display.service

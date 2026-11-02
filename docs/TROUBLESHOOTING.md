@@ -34,6 +34,18 @@ fastboot reboot
 `deploy/diagnostics/tb-display-watch` 会记录背光、DPMS 和帧计数，用来确认是
 “面板没上电”还是“没有帧提交”。
 
+## 开机慢 / 想再看控制台日志
+
+- `systemd-analyze blame` 看用户空间，`journalctl -b -k -o short-monotonic` 看内核
+  （`-o short-monotonic` 的时间戳能直接看出卡在哪一步）。
+- Wi-Fi 拆成两个单元：`tb-wifi` 只等 PCIe 端点出现后 `modprobe`（约 4 秒）；
+  `tb-wifi-up` 负责等 phy0 并让 NetworkManager 连接，但它排在 `multi-user.target`
+  之后，固件再慢也不会拖住登录界面。
+- 控制台默认已经安静了：`/etc/sysctl.d/10-tb-quiet-console.conf`（内核只打错误）
+  + `/etc/systemd/system.conf.d/20-tb-no-show-status.conf`（不打 systemd 状态行）。
+  想看启动日志用 `journalctl -b`；想看回控制台就临时
+  `sysctl kernel.printk="7 4 1 7"`。
+
 ## 关机 / 重启卡住（黑底白字，一直不动）
 
 关机流程在等一个**杀不掉的进程**。最常见的原因是 `qcom_iris` 被 `modprobe -r`

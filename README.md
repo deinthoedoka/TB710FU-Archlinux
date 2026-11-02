@@ -24,7 +24,7 @@ A tablet that works like a laptop:
 - Quad speakers, microphones, headphone / Bluetooth audio
 - Wi-Fi 7 (WCN7850) and Bluetooth
 - Ambient light sensor → auto brightness with learning; the login screen too
-- Flip-cover hall sensor: close the cover → screen off + lock; open → wake
+- Flip-cover hall sensor: close → screen off + lock + suspend (5 s, cancelled if reopened); open → screen on, press power to resume
 - Three power profiles (power-saver / balanced / performance), GPU touch boost
 - Battery level and charging status display correctly; suspend via s2idle
 - Everyday desktop software: Firefox, LibreOffice, Dolphin, Konsole, Discover (Flatpak)
@@ -46,7 +46,7 @@ The Android side (ZUXOS) stays exactly as it is — switch back any time.
 | Wi-Fi 7 | ✅ | WCN7850 / ath12k, 2.4 / 5 / 6 GHz |
 | Bluetooth | ✅ | WCN7850 |
 | Ambient light / accelerometer | ✅ | ADSP + hexagonrpcd + iio-sensor-proxy |
-| Flip-cover hall | ✅ | GPIO66; closed = screen off + lock |
+| Flip-cover hall | ✅ | GPIO66; closed = screen off + lock + suspend (5 s, cancelled if reopened) |
 | Charging / battery | ✅ | incl. the "fast charging shows as discharging" fix |
 | Suspend | ✅ | s2idle + UFS self-heal |
 | Volume / power keys | ✅ | Hardware order is reversed; swapped in software |

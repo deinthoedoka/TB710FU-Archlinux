@@ -90,7 +90,9 @@ README 里的清单对应到具体文件，方便改动和排查。
 | 行为 | 实现 |
 | --- | --- |
 | 读 GPIO66 判断合盖 | `deploy/cover/tb-cover-daemon` |
-| 合盖熄屏 + 锁屏，开盖唤醒 | 同上（loginctl + KDE D-Bus 双路） |
+| 合盖熄屏 + 锁屏 + 挂起，开盖亮屏 | 同上（loginctl + KDE D-Bus 双路；5 秒后 `systemctl suspend`，期间开盖则取消） |
+| 关掉合盖挂起 | `touch /etc/tb-cover-no-suspend` 后重启守护 |
+| 唤醒 | 休眠中按电源键（GPIO66 不是唤醒源） |
 
 ## 桌面与语言
 

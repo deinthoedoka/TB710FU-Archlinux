@@ -76,12 +76,12 @@ fi
 echo "== rootfs overlay (scripts, units, configs)"
 cp -a --no-preserve=ownership "$REPO/rootfs/usr/." "$ROOT/usr/"
 cp -a --no-preserve=ownership "$REPO/rootfs/etc/." "$E/etc/"
-chmod 0755 "$ROOT"/usr/local/sbin/tb-* "$ROOT"/usr/local/sbin/wifi-on 2>/dev/null || true
+chmod 0755 "$ROOT"/usr/local/sbin/tb-* "$ROOT"/usr/local/sbin/wifi-on "$ROOT"/usr/local/sbin/wifi-up 2>/dev/null || true
 
 echo "== enable services"
 S=$E/etc/systemd/system
 mkdir -p "$S/multi-user.target.wants" "$S/display-manager.service.wants"
-for u in tb-native-display tb-usb-ncm tb-usb-ncm-watch tb-wifi tb-audio-init tb-adsp-audio-check tb-touch-check; do
+for u in tb-native-display tb-usb-ncm tb-usb-ncm-watch tb-wifi tb-wifi-up tb-audio-init tb-adsp-audio-check tb-touch-check; do
   ln -sfn /etc/systemd/system/$u.service "$S/multi-user.target.wants/$u.service"
 done
 ln -sfn /etc/systemd/system/tb-native-display.service "$S/display-manager.service.wants/tb-native-display.service"

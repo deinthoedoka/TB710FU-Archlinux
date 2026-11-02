@@ -8,6 +8,8 @@ D=$(cd "$(dirname "$0")" && pwd)
 echo "== modprobe / udev / fonts"
 install -Dm644 "$D/qcom-battmgr-current.conf" /etc/modprobe.d/qcom-battmgr-current.conf
 install -Dm644 "$D/qcom-iris-noremove.conf" /etc/modprobe.d/qcom-iris-noremove.conf
+install -Dm644 "$D/10-tb-quiet-console.conf" /etc/sysctl.d/10-tb-quiet-console.conf
+install -Dm644 "$D/20-tb-no-show-status.conf" /etc/systemd/system.conf.d/20-tb-no-show-status.conf
 install -Dm644 "$D/10-fastrpc.rules" /etc/udev/rules.d/10-fastrpc.rules
 install -Dm644 "$D/90-tb-backlight.rules" /etc/udev/rules.d/90-tb-backlight.rules
 install -Dm644 "$D/local.conf" /etc/fonts/local.conf

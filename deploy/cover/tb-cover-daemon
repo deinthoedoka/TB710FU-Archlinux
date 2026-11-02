@@ -17,6 +17,7 @@ import os
 import select
 import struct
 import subprocess
+import threading
 import time
 
 CHIP = '/dev/gpiochip0'
@@ -25,6 +26,10 @@ CLOSED_LEVEL = 0
 LOCK_USER = 'alarm'
 STARTUP_CLOSED_DELAY = 15.0
 DEBOUNCE = 0.06
+# 合盖后延迟这么久再挂起；期间开盖就不挂（避免手滑合盖就睡）。
+# 想彻底关掉合盖挂起：touch /etc/tb-cover-no-suspend
+SUSPEND_AFTER = 5.0
+SUSPEND_OPTOUT = '/etc/tb-cover-no-suspend'
 
 BLANK_ON = b'0'
 BLANK_OFF = b'4'
@@ -235,6 +240,30 @@ def lock_sessions():
         lock_kde(uid)
 
 
+def suspend_when_still_closed(fd):
+    """合盖后延迟挂起；延迟内开盖就取消。
+
+    只关背光不挂起时 SoC 仍然醒着（实测 ~2.8 W），放包里一晚就掉光电池。
+    挂起由 systemd 做，唤醒要按电源键（GPIO66 不是唤醒源）。
+    """
+    if os.path.exists(SUSPEND_OPTOUT):
+        return
+
+    def worker():
+        time.sleep(SUSPEND_AFTER)
+        try:
+            if read_value(fd) != CLOSED_LEVEL:
+                log('合盖延迟内又打开了，取消挂起')
+                return
+        except OSError as exc:
+            log('挂起前读 GPIO 失败: %s，取消挂起' % exc)
+            return
+        log('皮套仍闭合，挂起系统')
+        subprocess.run(['systemctl', 'suspend'], check=False)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def main():
     waker = Waker()
     waker.open()
@@ -284,6 +313,7 @@ def main():
                         log('皮套闭合')
                         set_backlight(False)
                         lock_sessions()
+                        suspend_when_still_closed(line_fd)
                     else:
                         log('皮套打开')
                         set_backlight(True)
@@ -294,6 +324,7 @@ def main():
             if last_state == CLOSED_LEVEL:
                 log('启动时皮套就是闭合的，执行锁屏')
                 lock_sessions()
+                suspend_when_still_closed(line_fd)
 
 
 if __name__ == '__main__':

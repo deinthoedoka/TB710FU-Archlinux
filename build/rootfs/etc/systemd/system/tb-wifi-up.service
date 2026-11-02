@@ -1,0 +1,15 @@
+[Unit]
+Description=TB710FU WiFi: wait for phy0 and let NetworkManager connect
+# Ordered after the target on purpose: a slow firmware load must never delay the
+# login screen. WantedBy still pulls it in, but multi-user does not wait for it.
+After=multi-user.target tb-wifi.service
+Wants=tb-wifi.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wifi-up
+RemainAfterExit=yes
+TimeoutStartSec=240
+
+[Install]
+WantedBy=multi-user.target
