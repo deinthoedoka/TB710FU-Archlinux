@@ -20,6 +20,7 @@ that key (`install_payload.sh` does this if you pass `SSH_PUBKEY=` during the ro
 | `power/` | `org.freedesktop.UPower.PowerProfiles` three-level service (power-saver / balanced / performance); unit is ordered before `display-manager.service` so PowerDevil's one-shot probe doesn't race it |
 | `monitor/` | ksystemstats GPU plugin patch (msm/Adreno platform devices: fdinfo usage, devfreq freq, hwmon temp) — build on the tablet or install the Release asset |
 | `mtp/` | MTP storage over the USB cable (uMTP-Responder over FunctionFS, shares the NCM gadget) |
+| `vaapi/` | VA-API decode/encode for VLC, OBS and other libva apps (qcom-va-driver, iris kernel patches, app configs, decode self-check) |
 | `plasma/` | first-login touch defaults (2× scale, no panel hiding) |
 | `sensors/` | hexagonrpcd + sensor registry (optional, needs meson on the tablet) |
 | `diagnostics/` | black-screen/backlight watcher, not installed by default |
@@ -27,6 +28,8 @@ that key (`install_payload.sh` does this if you pass `SSH_PUBKEY=` during the ro
 ## Notes
 
 - `deploy_all.sh` does not touch `boot_a`. Kernel changes come from the image built in `build/`.
+- `vaapi` is not part of `deploy_all.sh`: it needs the Release assets (or a build) and may
+  hot-swap `qcom-iris.ko`. Run `deploy/vaapi/deploy_vaapi.sh` when you want it.
 - Everything is idempotent; re-running replaces files and restarts the affected units.
 - `system/install_system_extras.sh` needs `cc` (gcc) on the tablet for the volume-key helper.
   Without it the rest still installs.

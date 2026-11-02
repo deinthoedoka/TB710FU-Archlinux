@@ -72,6 +72,25 @@ tb-als status
 - 有 lux 但亮度不动：确认 `~/.config/tb-als-enabled` 存在，且
   `tb-als-daemon` 在跑。想清掉学习数据：`tb-als reset-profile`。
 
+## 视频软解（VLC / OBS 没有硬件解码器）
+
+VA-API 链路要三段都通，按顺序查：
+
+```bash
+vainfo --display drm --device /dev/dri/renderD128 | grep -E 'Driver version|VLD'
+tb-hwdec-check                                   # 播 8 秒，看解码通道 + VPU 是否 active
+modinfo -F vermagic /usr/lib/modules/$(uname -r)/kernel/drivers/media/platform/qcom/iris/qcom-iris.ko
+```
+
+- 第一段空/报错：`/usr/lib/dri/v4l2_drv_video.so` 没装或没软链 `msm_drv_video.so`
+  → `deploy/vaapi/install.sh`。
+- `vainfo` 有输出但播放报 **"Failed to end picture decode"**：内核模块不带
+  decode-order 补丁 → 换 `qcom-iris-7.2.6-tb710fu-vaapi.ko`（Release v1.2）或重编内核。
+- 只有 VLC 不行：ALARM 的 VLC 拆包了，`pacman -Q vlc-plugin-ffmpeg` 必须存在。
+- flatpak 版永远不行（沙箱看不到宿主 `/usr/lib/dri`），换原生包。
+- 采样时视频窗口必须在最前：后台/被遮挡的播放器会被节流，VPU 状态读出来是
+  `suspended`，看起来像没硬解。
+
 ## 充电显示“放电”
 
 确认模块参数生效：

@@ -86,8 +86,17 @@ Android 侧（ZUXOS）保持原样，随时可以切回去。
   （系统 ffmpeg 自带 h264/hevc/vp9 的 v4l2m2m），mpv 默认走
   `hwdec=v4l2m2m-copy`（`/etc/mpv/mpv.conf`）。4K H264 解码约 12 倍速
   （HEVC 35×、VP9 25×）。
+- **VA-API**：在同一个设备上再套一层 radxa `qcom-va-driver`，VLC、OBS 和所有
+  libva 应用才能硬解硬编——H264 全系、HEVC Main/Main10、VP9 profile 0/2、AV1 解码，
+  外加 H264/HEVC 编码；4K60 HEVC 56 Mbps 实测 227 fps（3.8 倍速）。mpv 走零拷贝
+  （`hwdec=vaapi`），Firefox 与原生 VLC 硬解，OBS 能选「FFmpeg VAAPI H.264/HEVC」
+  编码器。驱动要求 5 个 iris 内核补丁（`build/patches/000[2-6]-media-iris-*`，
+  `build_kernel.sh` 自动打，其中 0002 是针对本机基线的移植版）；安装见
+  `deploy/vaapi`（Release v1.2 附预编译驱动与模块）。
 - Firefox 开箱即用硬解：4K H264 全程 VPU ACTIVE、RDD 解码进程 CPU 约 0.2%，
-  无需任何设置（Firefox ~116 起 V4L2m2m 已编进默认构建）。
+  无需任何设置（Firefox ~116 起 V4L2m2m 已编进默认构建）；
+  `deploy/vaapi/install.sh` 额外写入 VA-API 偏好，4K60 走这条更快。
+- flatpak 应用永远用不上这个 VA-API 驱动（沙箱自带 `/usr/lib/dri`），要装原生包。
 
 ### 音频
 

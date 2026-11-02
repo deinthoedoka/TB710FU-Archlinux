@@ -33,4 +33,5 @@ echo
 echo "done. Sensors are separate: deploy/sensors/install_sensors.sh (needs meson on the tablet)."
 echo "MTP needs the uMTP-Responder tarball: deploy/mtp/deploy_mtp.sh (see its README)."
 echo "GPU monitoring is separate: deploy/monitor/deploy_monitor.sh (builds on the tablet)."
+echo "VA-API is separate and takes the Release assets: deploy/vaapi/deploy_vaapi.sh."
 echo "Log out and back in (or reboot) so plasmalogin and the session pick everything up."

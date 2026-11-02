@@ -49,6 +49,18 @@ bash wsl_build.sh all
    - `q6dsp-lpass-clocks` 注册期竞态（ADSP 未就绪时 `rpmsg_send` 永久阻塞）
    - DTS：ADSP/CDSP 固件名 `.mdt` → `.mbn`，去掉强制的 `tb710fu.nbd` 命令行
    - 面板驱动的 prepare/disable 日志
+5. **`patches/0002..0006-media-iris-*.patch`** —— VA-API 必需的 iris 补丁
+   （来自 radxa qcom-va-driver 的 `patches/`）：
+   - `0002`：decode-order output 的**本机移植版**。上游 0001 打不上这套基线
+     （缺 `REQUEST_SYNC_FRAME` 上下文），改由 `deploy/vaapi/port_decode_order.py`
+     按锚点原地修改后 `diff` 生成；没有它 VA-API 每帧都报
+     "Failed to end picture decode"
+   - `0003`：更大的采集缓冲池；`0004`：去块滤波控件；`0005`：错误帧保留时间戳；
+     `0006`：非显示缓冲回收
+6. `arch.config` 片段 + `olddefconfig`（见下）
+
+板级补丁是按 freedom 基线写的，7.2.6 里已经有其中一部分内容，所以
+`build_kernel.sh` 用 `patch --forward` 跳过已应用的 hunk 并继续，而不是整体失败。
 
 `patches/0001-tb710fu-local.patch` 是在 `linux-7.2.6 + 上游两个补丁` 之上用
 `diff -u` 生成的，所以只能按上面的顺序应用。

@@ -24,6 +24,18 @@ v1.1 起 Release 还附带进不了 git 的设备端补丁二进制（`.gitignor
 `ksystemstats_plugin_gpu-<ver>-tb710fu-msm-aarch64.so`，系统监视器 GPU 页的预编译
 插件，用 `deploy/monitor/deploy_prebuilt.sh` 安装。
 
+v1.2 起再加两个 VA-API 资产（VLC / OBS / libva 应用硬解硬编）：
+
+| 文件 | 作用 |
+| --- | --- |
+| `v4l2_drv_video.so` | qcom-va-driver 1.1.1 驱动（本机编译验证：`md5 a83093d4…`，未 strip，含符号） |
+| `qcom-iris-7.2.6-tb710fu-vaapi.ko` | 打好 5 个 VA-API 补丁的 iris 模块（`modinfo` 版本 7.2.6-tb710fu，`md5 2d96f48d…`）；只在没重编内核、但装的是旧模块时才需要 |
+
+安装：`deploy/vaapi/deploy_vaapi.sh <平板IP> v4l2_drv_video.so qcom-iris-7.2.6-tb710fu-vaapi.ko`
+（模块可省略；省略后要求平板上的模块已经带补丁）。注意 `deploy_all.sh` **不含**这一步。
+另附上游 radxa 的 `.deb` 仅作对照，它在 Debian 下装到 `/usr/lib/aarch64-linux-gnu/dri`，
+Arch 上要用 `install.sh` 转换。
+
 本次构建的体积：`Image` 44 MB、dtb 138 KB、`kShimC.bin` 4 MB、打包器 828 KB、模块 92 MB；
 rootfs 原始 10 GiB，压缩后 3.38 GiB，分两卷（1.9 GB + 1.6 GB）。产物已经生成在仓库的
 `out-release/`（被 `.gitignore` 排除，可直接上传 Release）。

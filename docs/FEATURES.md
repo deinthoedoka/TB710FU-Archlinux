@@ -54,6 +54,10 @@ README 里的清单对应到具体文件，方便改动和排查。
 | mpv 默认 v4l2m2m-copy 硬解 | `build/rootfs/etc/mpv/mpv.conf`（iris 是有状态解码器，v4l2m2m 直连） |
 | Firefox 硬解 | 无需配置：Firefox ≥116 的 V4L2m2m 编在默认构建里（实测 4K H264 RDD CPU 0.2%） |
 | iris VPU 启用 | kshim dts `&iris status=okay` + `vpu33_p4.mbn` 固件（用户自设备注入） |
+| VA-API 解码/编码（VLC、OBS、libva 应用） | `deploy/vaapi/`（radxa qcom-va-driver + 5 个 iris 补丁）；Release v1.2 附预编译驱动和模块 |
+| VA-API 所需的内核补丁 | `build/patches/000[2-6]-media-iris-*`，`build_kernel.sh` 自动应用；0002 是针对本机基线的移植版 |
+| 硬解自检 | `tb-hwdec-check`（`deploy/vaapi/hwdec-selfcheck.sh`，播 8 秒采样 VPU 状态） |
+| 驱动源码构建（新版本/其他机型） | `deploy/vaapi/build_driver.sh`（meson，关掉 cdsp_vpp/vulkan_vpp） |
 
 ## 系统监视器 GPU 页
 

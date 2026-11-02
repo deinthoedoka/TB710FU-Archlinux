@@ -86,9 +86,19 @@ done < "$FK/patches/series"
 cp "$FK"/dts/*.dts "$FK"/dts/*.dtsi arch/arm64/boot/dts/qcom/
 for p in "$FK"/dts/*.patch; do patch -p1 -F0 --no-backup-if-mismatch -s < "$p" || echo "freedom dts: skipped $p"; done
 
-patch -p1 --no-backup-if-mismatch < "$REPO/kernel/tb710fu-kernel-on-freedom.patch"
+# the board patch was written against the freedom base; 7.2.6 already contains
+# some of it, so stale hunks are skipped exactly like the original build did
+patch -p1 --forward --no-backup-if-mismatch < "$REPO/kernel/tb710fu-kernel-on-freedom.patch" \
+  || echo "note: board patch skipped stale hunks - continuing"
 echo "== local TB710FU kernel changes (battmgr polarity, LPASS clock race, DTS)"
-patch -p1 --no-backup-if-mismatch < "$ARCH_ROOT/patches/0001-tb710fu-local.patch"
+patch -p1 --forward --no-backup-if-mismatch < "$ARCH_ROOT/patches/0001-tb710fu-local.patch" \
+  || echo "note: local patch skipped stale hunks - continuing"
+
+echo "== VA-API iris patches (qcom-va-driver requirements, see deploy/vaapi)"
+for p in "$ARCH_ROOT"/patches/000[2-6]-media-iris-*.patch; do
+  echo "   applying $(basename "$p")"
+  patch -p1 --no-backup-if-mismatch -s < "$p"
+done
 
 echo "== initramfs (Arch variant)"
 mkdir -p ../initramfs

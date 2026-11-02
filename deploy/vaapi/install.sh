@@ -1,0 +1,174 @@
+#!/bin/bash
+# install.sh - VA-API hardware decode/encode on a running TB710FU Arch install.
+#
+# Installs the qcom-va-driver (VA-API backend for the Iris VPU), optionally
+# hot-swaps a VA-API-ready qcom-iris.ko, and configures mpv / Firefox / VLC.
+# The iris kernel patches live in build/patches/000[2-6]-media-iris-*.patch and
+# are baked into kernels built by build/build_kernel.sh; a prebuilt module is
+# attached to the GitHub release.
+#
+# Usage (as root, ON the tablet):
+#   bash install.sh [--driver <v4l2_drv_video.so | qcom-va-driver_*.deb>] [--ko <qcom-iris.ko>]
+#
+# --driver accepts either the compiled .so or radxa's Debian package (its payload
+# is installed under /usr/lib/aarch64-linux-gnu on Debian; this script puts it
+# where libva looks on Arch). Without --driver it uses a local copy in /root if
+# present, else downloads the Release asset.
+# --ko without a value is not possible: omit it to keep the installed module,
+# which must already contain the iris VA-API patches or decode fails after one
+# frame with "Failed to end picture decode".
+set -euo pipefail
+
+DRIVER="" KO=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --driver|--deb) DRIVER=$2; shift 2 ;;
+    --ko) KO=$2; shift 2 ;;
+    *) echo "usage: $0 [--driver <.so|.deb>] [--ko <qcom-iris.ko>]"; exit 2 ;;
+  esac
+done
+
+say() { printf '\n== %s\n' "$*"; }
+die() { echo "!! $*"; exit 1; }
+
+KVER=$(uname -r)
+IRISDEV=/sys/bus/platform/devices/aa00000.video-codec
+REL=https://github.com/deinthoedoka/TB710FU-Archlinux/releases/download/v1.2
+
+say "preflight"
+[ "$KVER" = "7.2.6-tb710fu" ] || echo "   note: built for 7.2.6-tb710fu, running $KVER"
+[ -e /dev/dri/renderD128 ] || die "no render node (/dev/dri/renderD128)"
+[ -d "$IRISDEV" ] || die "iris VPU not enabled in this kernel's DT (aa00000.video-codec missing)"
+[ -f /lib/firmware/qcom/vpu/vpu33_p4.mbn ] || \
+  echo "   note: /lib/firmware/qcom/vpu/vpu33_p4.mbn not found - iris won't probe without it"
+
+say "libva"
+pacman -Qq libva >/dev/null 2>&1 || pacman -S --needed --noconfirm libva || \
+  echo "   note: could not install libva (offline?) - VA-API clients will need it"
+
+say "qcom-va-driver (userspace VA-API)"
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
+
+driver_from_deb() { # .deb -> path of the compiled driver .so
+  # A .deb is an ar archive holding data.tar.{xz,zst,gz}; bsdtar (pacman's own
+  # backend) reads it, so no dpkg is needed.
+  bsdtar -xf "$1" -C "$TMPD" || die "cannot unpack $1"
+  local d
+  d=$(ls "$TMPD"/data.tar.* 2>/dev/null | head -1)
+  [ -n "$d" ] || die "no data.tar.* inside $1"
+  mkdir -p "$TMPD/root"; bsdtar -xf "$d" -C "$TMPD/root" || die "cannot extract $1 payload"
+  local so
+  so=$(find "$TMPD/root" -name v4l2_drv_video.so -type f | head -1)
+  [ -n "$so" ] || die "$1 does not contain v4l2_drv_video.so"
+  # the package also ships GStreamer ranking; keep it if present
+  local env
+  env=$(find "$TMPD/root" -name '60-libva-v4l2.conf' -type f | head -1)
+  [ -n "$env" ] && install -D -m0644 "$env" /usr/lib/environment.d/60-libva-v4l2.conf
+  echo "$so"
+}
+
+if [ -z "$DRIVER" ]; then
+  for c in /root/v4l2_drv_video.so /root/qcom-va-driver_*_arm64.deb; do
+    [ -e "$c" ] && { DRIVER=$c; break; }
+  done
+fi
+if [ -z "$DRIVER" ]; then
+  echo "   downloading $REL/v4l2_drv_video.so"
+  DRIVER=/root/v4l2_drv_video.so
+  # -T/-t so a blocked GitHub stalls for 40 s at most instead of hanging forever
+  wget -q -T 20 -t 2 -O "$DRIVER" "$REL/v4l2_drv_video.so" \
+    || { rm -f "$DRIVER"; die "download failed - pass --driver with a local copy (or run build_driver.sh)"; }
+fi
+[ -f "$DRIVER" ] || die "driver not found: $DRIVER"
+
+case "$DRIVER" in
+  *.deb) SO=$(driver_from_deb "$DRIVER") ;;
+  *)     SO=$DRIVER ;;
+esac
+install -D -m0755 "$SO" /usr/lib/dri/v4l2_drv_video.so
+# libva learns the vendor from the driver name; the Debian postinst would create
+# this alias and it is what makes the driver auto-select on this device.
+ln -sfn v4l2_drv_video.so /usr/lib/dri/msm_drv_video.so
+echo "   /usr/lib/dri/v4l2_drv_video.so <- $(basename "$DRIVER") ($(md5sum < /usr/lib/dri/v4l2_drv_video.so | cut -d' ' -f1))"
+
+say "kernel module hot-swap"
+if [ -n "$KO" ]; then
+  MODDIR=/usr/lib/modules/$KVER/kernel/drivers/media/platform/qcom/iris
+  [ -f "$MODDIR/qcom-iris.ko" ] || die "no qcom-iris.ko for $KVER - install the kernel modules first"
+  [ -f "$KO" ] || die "module not found: $KO"
+  [ -f /root/qcom-iris.ko.bak-pre-va ] || cp "$MODDIR/qcom-iris.ko" /root/qcom-iris.ko.bak-pre-va
+  if fuser /dev/video0 >/dev/null 2>&1; then
+    echo "   !! /dev/video0 is in use (a player is open) - close it if the reload below fails"
+  fi
+  install -D -m0644 "$KO" "$MODDIR/qcom-iris.ko"
+  depmod "$KVER"
+  modprobe -r qcom_iris 2>/dev/null || true
+  modprobe qcom_iris || die "could not reload qcom_iris - reboot instead"
+fi
+[ -e /dev/video0 ] && echo "   /dev/video0 present" || echo "   !! /dev/video0 missing after reload"
+
+say "mpv"
+if command -v mpv >/dev/null; then
+  f=/etc/mpv/mpv.conf
+  touch "$f"
+  for kv in "hwdec=vaapi" "vo=gpu"; do
+    k=${kv%%=*}
+    if grep -qs "^\s*#*$k=" "$f"; then sed -i "s|^\s*#*$k=.*|$kv|" "$f"; else echo "$kv" >> "$f"; fi
+  done
+  echo "   $f: $(grep -E '^(hwdec|vo)=' "$f" | tr '\n' ' ')"
+fi
+
+say "firefox"
+if [ -d /usr/lib/firefox ]; then
+  cat > /usr/lib/firefox/defaults/pref/tb710fu-vaapi.js <<'EOF'
+// TB710FU: enable VA-API hardware video decoding (qcom-va-driver).
+// Re-created by deploy/vaapi/install.sh; a pacman firefox update removes it.
+pref("media.ffmpeg.vaapi.enabled", true);
+pref("media.hardware-video-decoding.force-enabled", true);
+EOF
+  echo "   /usr/lib/firefox/defaults/pref/tb710fu-vaapi.js written (restart firefox)"
+fi
+
+say "vlc (native packages only; flatpak can never see the host driver)"
+if pacman -Qq vlc >/dev/null 2>&1; then
+  if ! pacman -Qq vlc-plugin-ffmpeg >/dev/null 2>&1; then
+    # ALARM splits VLC into subpackages; without -ffmpeg there is no vaapi module.
+    mapfile -t VP < <(pacman -Ssq '^vlc-plugin-' 2>/dev/null || true)
+    if [ ${#VP[@]} -gt 0 ]; then
+      pacman -S --needed --noconfirm vlc "${VP[@]}" || \
+        echo "   note: could not install vlc-plugin-* (offline?) - VLC stays software-only"
+    fi
+  fi
+  setvlcrc() {
+    # VLC reads avcodec-hw from the [avcodec] module section, not [core]: the
+    # option belongs to the FFmpeg decoder module.
+    f=$1; mkdir -p "$(dirname "$f")"; [ -f "$f" ] || { printf '[qt]\nqt-privacy-ask=0\n[avcodec]\navcodec-hw=vaapi\n' > "$f"; return; }
+    grep -q '^avcodec-hw=vaapi' "$f" && return 0
+    if grep -q '^#*avcodec-hw=' "$f"; then
+      # the shipped default has a commented "#avcodec-hw=any" in [avcodec]
+      sed -i 's/^#*avcodec-hw=.*/avcodec-hw=vaapi/' "$f"
+    elif grep -q '^\[avcodec\]' "$f"; then
+      sed -i '/^\[avcodec\]/a avcodec-hw=vaapi' "$f"
+    else
+      printf '\n[avcodec]\navcodec-hw=vaapi\n' >> "$f"
+    fi
+  }
+  setvlcrc /etc/vlc/vlcrc || true
+  if [ -d /home/alarm/.config ]; then setvlcrc /home/alarm/.config/vlc/vlcrc; chown -R alarm:alarm /home/alarm/.config/vlc; fi
+  echo "   vlcrc: avcodec-hw=vaapi"
+fi
+
+say "self-check"
+install -m0755 "$(dirname "$0")/hwdec-selfcheck.sh" /usr/local/bin/tb-hwdec-check 2>/dev/null \
+  && echo "   installed /usr/local/bin/tb-hwdec-check" \
+  || echo "   hwdec-selfcheck.sh not next to install.sh - skipped"
+
+say "verify"
+if command -v vainfo >/dev/null; then
+  vainfo --display drm --device /dev/dri/renderD128 2>&1 | grep -E "Driver version|VAEntrypoint" | head -10
+else
+  echo "   install libva-utils for vainfo"
+fi
+echo
+echo "done. Play something and run: tb-hwdec-check   (keep the video window visible!)"

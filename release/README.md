@@ -27,6 +27,20 @@ Since v1.1 the Release also carries device-side patches that cannot live in git
 (gitignored binaries): `ksystemstats_plugin_gpu-<ver>-tb710fu-msm-aarch64.so`, the
 prebuilt System Monitor GPU plugin — install with `deploy/monitor/deploy_prebuilt.sh`.
 
+Since v1.2 it also carries the two VA-API pieces (hardware decode/encode for VLC, OBS
+and other libva apps):
+
+| File | Purpose |
+| --- | --- |
+| `v4l2_drv_video.so` | qcom-va-driver 1.1.1 driver, built and verified on this device (`md5 a83093d4…`, unstripped) |
+| `qcom-iris-7.2.6-tb710fu-vaapi.ko` | iris module with the five VA-API patches (`modinfo` 7.2.6-tb710fu, `md5 2d96f48d…`); only needed if you did not rebuild the kernel |
+
+Install with `deploy/vaapi/deploy_vaapi.sh <tablet-ip> v4l2_drv_video.so
+qcom-iris-7.2.6-tb710fu-vaapi.ko` (the module is optional; without it the installed
+module must already be a patched one). Note `deploy_all.sh` does **not** include this
+step. Upstream radxa's `.deb` is carried for reference only: on Debian it installs
+into `/usr/lib/aarch64-linux-gnu/dri`, so on Arch `install.sh` converts it.
+
 Sizes of this build: `Image` 44 MB, dtb 138 KB, `kShimC.bin` 4 MB, packer 828 KB,
 modules 92 MB; the rootfs is 10 GiB raw / 3.38 GiB compressed, split into two volumes
 (1.9 GB + 1.6 GB). The artifacts are generated into the repository's `out-release/`

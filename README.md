@@ -110,9 +110,20 @@ This is not a "it boots" port — it is tuned for daily use:
   correct userspace path is **v4l2m2m** (in-tree ffmpeg ships h264/hevc/vp9 v4l2m2m);
   mpv defaults to `hwdec=v4l2m2m-copy` (`/etc/mpv/mpv.conf`). 4K H264 decodes at ~12×
   realtime (HEVC 35×, VP9 25×).
+- **VA-API** is available on top of the same device (radxa `qcom-va-driver`), which is
+  what VLC, OBS and libva-based apps need: H264 all profiles, HEVC Main/Main10, VP9
+  profile 0/2 and AV1 decode, plus H264/HEVC encode. A 4K60 HEVC 56 Mbps file decodes
+  at ~227 fps (3.8×). mpv runs zero-copy (`hwdec=vaapi`), Firefox and native VLC
+  hardware-decode, OBS lists "FFmpeg VAAPI H.264/HEVC" encoders. The driver needs five
+  iris kernel patches (`build/patches/000[2-6]-media-iris-*`, applied by
+  `build_kernel.sh`), one of them a TB710FU port; install with `deploy/vaapi`
+  (prebuilt driver and module on Release v1.2).
 - Firefox plays 4K H264 with hardware decode out of the box — no prefs needed
   (V4L2m2m is compiled in since Firefox ~116); the RDD decoder process sits at ~0.2%
-  CPU while the VPU stays active.
+  CPU while the VPU stays active. `deploy/vaapi/install.sh` additionally sets the
+  VA-API prefs, which is the faster path for 4K60.
+- Flatpak apps can never use the VA-API driver (their sandbox has its own
+  `/usr/lib/dri`); use native packages.
 
 ### Network
 
