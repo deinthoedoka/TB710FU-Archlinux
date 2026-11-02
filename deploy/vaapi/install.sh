@@ -37,7 +37,7 @@ die() { echo "!! $*"; exit 1; }
 
 KVER=$(uname -r)
 IRISDEV=/sys/bus/platform/devices/aa00000.video-codec
-REL=https://github.com/deinthoedoka/TB710FU-Archlinux/releases/download/v1.2
+REL=https://github.com/deinthoedoka/TB710FU-Archlinux/releases/download/v1.3
 
 say "preflight"
 [ "$KVER" = "7.2.6-tb710fu" ] || echo "   note: built for 7.2.6-tb710fu, running $KVER"

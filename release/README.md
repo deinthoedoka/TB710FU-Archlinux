@@ -32,8 +32,14 @@ and other libva apps):
 
 | File | Purpose |
 | --- | --- |
-| `v4l2_drv_video.so` | qcom-va-driver 1.1.1 driver, built and verified on this device (`md5 a83093d4…`, unstripped) |
+| `v4l2_drv_video.so` | qcom-va-driver 1.1.1 driver, built and verified on this device (`md5 a83093d4…`, unstripped) — **decode only**, see v1.3 for the encoder fix |
 | `qcom-iris-7.2.6-tb710fu-vaapi.ko` | iris module with the five VA-API patches (`modinfo` 7.2.6-tb710fu, `md5 2d96f48d…`); only needed if you did not rebuild the kernel |
+
+Since v1.3 the `v4l2_drv_video.so` asset is rebuilt with
+`deploy/vaapi/patches/0001-iris-encoder-handle-missing-v4l2-controls.patch`
+(`md5 1928dd2a…`). Use that one: the v1.2 build decodes fine but OBS stops
+recording after a few seconds with `vaapi_encode: Error encoding: 输入/输出错误`.
+The module and the kernel patches are unchanged.
 
 Install with `deploy/vaapi/deploy_vaapi.sh <tablet-ip> v4l2_drv_video.so
 qcom-iris-7.2.6-tb710fu-vaapi.ko` (the module is optional; without it the installed

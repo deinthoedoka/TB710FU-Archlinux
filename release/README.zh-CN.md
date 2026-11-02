@@ -28,8 +28,13 @@ v1.2 起再加两个 VA-API 资产（VLC / OBS / libva 应用硬解硬编）：
 
 | 文件 | 作用 |
 | --- | --- |
-| `v4l2_drv_video.so` | qcom-va-driver 1.1.1 驱动（本机编译验证：`md5 a83093d4…`，未 strip，含符号） |
+| `v4l2_drv_video.so` | qcom-va-driver 1.1.1 驱动（本机编译验证：`md5 a83093d4…`，未 strip，含符号）——**只能解码**，编码看 v1.3 |
 | `qcom-iris-7.2.6-tb710fu-vaapi.ko` | 打好 5 个 VA-API 补丁的 iris 模块（`modinfo` 版本 7.2.6-tb710fu，`md5 2d96f48d…`）；只在没重编内核、但装的是旧模块时才需要 |
+
+v1.3 起 `v4l2_drv_video.so` 改成打过
+`deploy/vaapi/patches/0001-iris-encoder-handle-missing-v4l2-controls.patch` 的版本
+（`md5 1928dd2a…`），**用这个**：v1.2 的能解码，但 OBS 录几秒就会报
+`vaapi_encode: Error encoding: 输入/输出错误`。模块和内核补丁没有变化。
 
 安装：`deploy/vaapi/deploy_vaapi.sh <平板IP> v4l2_drv_video.so qcom-iris-7.2.6-tb710fu-vaapi.ko`
 （模块可省略；省略后要求平板上的模块已经带补丁）。注意 `deploy_all.sh` **不含**这一步。
