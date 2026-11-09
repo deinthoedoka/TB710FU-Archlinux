@@ -1,0 +1,18 @@
+#!/bin/sh
+# Wait until the ADSP sensor PD answers (used as iio-sensor-proxy ExecStartPre).
+#
+# iio-sensor-proxy starts in ~50ms, but hexagonrpcd needs a few seconds to
+# attach and the DSP registers its sensors shortly after. Starting the proxy
+# too early makes it exit ("No sensors") and restart, which invalidates every
+# client's claim -- including mutter's accelerometer claim, which it never
+# re-establishes. So: wait for a real sensor answer first.
+i=0
+while [ "$i" -lt 60 ]; do
+    if timeout 4 ssccli --sensor light --timeout 1 >/dev/null 2>&1; then
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 0.5
+done
+echo "tb-wait-sensors: sensor PD did not answer" >&2
+exit 1

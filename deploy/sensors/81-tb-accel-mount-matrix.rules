@@ -1,0 +1,22 @@
+# TB710FU: accelerometer mount matrix for the SSC (DSP) accelerometer.
+#
+# The bmi3x0 is mounted so that, with the tablet held in its native landscape
+# pose (front camera on top), its +X axis points up. iio-sensor-proxy expects
+# the IIO convention where "normal" (panel native landscape) means Y = -g, so
+# the sensor frame has to be rotated by -90 degrees around Z:
+#
+#     x' =  y
+#     y' = -x
+#     z' =  z
+#
+# Measured on device (tablet held landscape, camera up):
+#     X=+9.19  Y=-0.41  Z=+1.84   -> iio reported "left-up" (transform 90),
+#                                    which made the UI portrait.
+# With this matrix the same pose maps to Y=-9.19, i.e. "normal" (transform 0).
+#
+# The udev property is read by iio-sensor-proxy (setup_mount_matrix()) when it
+# opens the FastRPC device; it only applies after iio-sensor-proxy restarts
+# (a reboot, or restart iio + re-claim by mutter).
+
+SUBSYSTEM=="misc", KERNEL=="fastrpc-adsp*", ENV{ACCEL_MOUNT_MATRIX}="0,1,0;-1,0,0;0,0,1"
+SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp*", ENV{ACCEL_MOUNT_MATRIX}="0,1,0;-1,0,0;0,0,1"

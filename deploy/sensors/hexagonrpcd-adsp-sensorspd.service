@@ -4,6 +4,10 @@ After=sysinit.target
 StartLimitIntervalSec=0
 
 [Service]
+# /dev/fastrpc-adsp 由 udev 建出，可能晚于本服务启动；INIT_ATTACH_SNS 抢跑会
+# 以 NOPERMISSION 退出，之后即使重启，DSP 侧 sensor PD 也不会再正常枚举传感器
+# （表现：HasAmbientLight=true 但 LightLevel 永远 0）。先等设备节点。
+ExecStartPre=/usr/bin/sh -c 'i=0; while [ ! -e /dev/fastrpc-adsp ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done'
 Type=simple
 User=fastrpc
 Group=fastrpc
