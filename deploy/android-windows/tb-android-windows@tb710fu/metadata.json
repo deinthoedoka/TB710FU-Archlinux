@@ -1,0 +1,7 @@
+{
+  "uuid": "tb-android-windows@tb710fu",
+  "name": "TB710FU 安卓窗口控制",
+  "description": "为 droidloom 的安卓窗口提供触屏窗口控制：全屏、最大化、预设尺寸、自由缩放、关闭。GNOME/mutter 不提供窗口边框，安卓窗口本身也没有标题栏，所以用顶栏菜单补齐。",
+  "shell-version": ["51"],
+  "version": 1
+}

@@ -1,0 +1,26 @@
+/* Touch targets are deliberately large: the panel is 2x scaled, so 28 logical
+   pixels are 56 physical pixels. */
+
+.tb-android-panel-label {
+    padding-left: 4px;
+}
+
+.tb-android-resize-handle {
+    background-color: rgba(53, 132, 228, 0.65);
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    border-radius: 9px;
+}
+
+.tb-android-move-handle {
+    background-color: rgba(53, 132, 228, 0.55);
+    border: 2px solid rgba(255, 255, 255, 0.8);
+    border-radius: 9px;
+}
+
+.tb-android-done {
+    background-color: rgba(28, 28, 32, 0.92);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 14px;
+    font-weight: bold;
+}

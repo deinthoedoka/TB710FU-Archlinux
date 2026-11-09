@@ -1,0 +1,7 @@
+{
+  "uuid": "tb-display-mode@tb710fu",
+  "name": "TB710FU 刷新率",
+  "description": "在快捷设置里切换「自适应」和「60Hz 上限」。自适应按需最高 120Hz；60Hz 只限制合成器出帧节奏，不切换 KMS 模式（面板只有 120Hz 模式，硬切会花屏）。",
+  "shell-version": ["51"],
+  "version": 1
+}

@@ -1,0 +1,8 @@
+[Unit]
+Description=TB710FU: trim idle GNOME background services
+After=graphical-session.target
+ConditionUser=!@system
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tb-background-trim

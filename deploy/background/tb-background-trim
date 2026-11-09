@@ -1,0 +1,33 @@
+#!/bin/sh
+# TB710FU: stop GNOME background services that are not needed by the shell.
+#
+# These units are D-Bus activated, so opening GNOME Software, Calendar,
+# Contacts or Nautilus search starts them again.  Stopping them after login
+# frees ~300-400 MB on the 8 GB boards and removes their idle wakeups.
+#
+# The timer runs 90 s after the session starts, so the initial shell/portal
+# setup is not disturbed.
+set -eu
+
+AS_USER=""
+if [ "$(id -u)" = 0 ]; then
+    # Called by the system-level installer/clean-rootfs: target the alarm user.
+    AS_USER="runuser -u alarm -- env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
+fi
+
+trim() {
+    unit=$1
+    if $AS_USER systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+        $AS_USER systemctl --user stop "$unit" 2>/dev/null || true
+        echo "tb-background-trim: stopped $unit"
+    fi
+}
+
+# GNOME Software only needs to run when the app/store is opened.
+trim gnome-software.service
+# Full-text indexer; Nautilus search/reactivation starts it on demand.
+trim localsearch-3.service
+# Contacts data server; GNOME Contacts reactivates it.  The calendar factory
+# and source registry stay running: stopping them makes gnome-shell's calendar
+# backend log "has crashed" and leaves the clock menu without events.
+trim evolution-addressbook-factory.service
