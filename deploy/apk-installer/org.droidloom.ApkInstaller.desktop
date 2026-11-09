@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=APK 安装器
+Name[en]=APK Installer
+Comment=安装 Android APK 到 Droidloom
+Comment[en]=Install Android APKs into Droidloom
+Exec=/usr/local/bin/droidloom-apk-installer %f
+TryExec=/usr/local/bin/droidloom-apk-installer
+Icon=droidloom-apk-installer
+Terminal=false
+Categories=System;PackageManager;
+MimeType=application/vnd.android.package-archive;
+Keywords=apk;android;install;droidloom;安装;
+StartupNotify=true
+StartupWMClass=org.droidloom.ApkInstaller

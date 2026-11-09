@@ -1,0 +1,19 @@
+# Android product identity override for the droidloom cell.
+# Written into product/etc/build.prop by droidloom-supervisor (identity.rs):
+#   model/brand/manufacturer/device/product/marketname -> ro.product.<partition>.<suffix>
+#   platform/soc_model/soc_manufacturer -> ro.board.platform / ro.soc.model / ro.soc.manufacturer
+#   fingerprint -> every ro.<partition>.build.fingerprint
+# iQOO 13 (SM8750, Snapdragon 8 Elite, Tencent esports competition device) —
+# LoLM/TGPA tier graphics options by model + board.platform + soc.model +
+# marketname; the tablet's real Lenovo identity caps them (2026-11-08).
+model=V2408A
+brand=vivo
+manufacturer=vivo
+device=PD2408
+product=PD2408
+marketname=iQOO 13
+platform=sun
+board=sun
+soc_model=SM8750
+soc_manufacturer=QTI
+fingerprint=vivo/PD2408/PD2408:17/CP2A.260605.016/15885347:user/release-keys
