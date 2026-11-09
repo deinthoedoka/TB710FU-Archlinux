@@ -1,0 +1,7 @@
+{
+  "uuid": "tb-rotate-anim@tb710fu",
+  "name": "TB710FU Rotation Animation",
+  "description": "Android-like rotation animation for the builtin panel",
+  "shell-version": ["51"],
+  "version": 1
+}

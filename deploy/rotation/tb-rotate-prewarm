@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Prewarm the rotated scan-out buffer of the builtin panel.
+
+The first panel-orientation change after boot makes mutter allocate a new
+rotated framebuffer and power-cycle the DSI panel (a ~370 ms black flash).
+This helper applies the other panel shape once and immediately restores the
+current one, while GNOME Shell is still starting, so later rotations reuse
+the cached buffers.
+
+It is a no-op within the same boot: a marker in XDG_RUNTIME_DIR is created
+before the first run.  A temporary config is never persisted, so even a
+failed restore cannot survive a re-login.
+"""
+
+import os
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+BUS_NAME = "org.gnome.Mutter.DisplayConfig"
+OBJECT_PATH = "/org/gnome/Mutter/DisplayConfig"
+INTERFACE = "org.gnome.Mutter.DisplayConfig"
+
+
+def make_proxy():
+    return Gio.DBusProxy.new_for_bus_sync(
+        Gio.BusType.SESSION,
+        Gio.DBusProxyFlags.NONE,
+        None,
+        BUS_NAME,
+        OBJECT_PATH,
+        INTERFACE,
+        None,
+    )
+
+
+def current_state(proxy):
+    reply = proxy.call_sync(
+        "GetCurrentState", None, Gio.DBusCallFlags.NONE, 5000, None
+    )
+    serial, monitors, logical, _properties = reply.unpack()
+    return serial, monitors, logical
+
+
+def apply_transform(proxy, serial, monitors, logical, transform):
+    """Apply one transform, rebuilding the mode IDs ApplyMonitorsConfig needs.
+
+    GetCurrentState names logical-monitor members by their (connector, vendor,
+    product, serial) tuple, while ApplyMonitorsConfig wants
+    (connector, mode-id, properties).  Pair them up through the current mode
+    reported by each physical monitor.
+    """
+    current_modes = {}
+    for monitor in monitors:
+        connector = monitor[0][0]
+        modes = monitor[1]
+        mode_id = None
+        for mode in modes:
+            if mode[6].get("is-current"):
+                mode_id = mode[0]
+                break
+        if mode_id is None and modes:
+            mode_id = modes[0][0]
+        current_modes[connector] = mode_id
+
+    changed = []
+    for entry in logical:
+        x, y, scale, _old_transform, primary, monitor_list, _properties = entry
+        members = []
+        for member in monitor_list:
+            connector = member[0]
+            mode_id = current_modes.get(connector)
+            if mode_id is None:
+                raise RuntimeError(f"no current mode for {connector}")
+            members.append((connector, mode_id, {}))
+        changed.append((x, y, scale, transform, primary, members))
+
+    params = GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", (serial, 1, changed, {}))
+    proxy.call_sync(
+        "ApplyMonitorsConfig", params, Gio.DBusCallFlags.NONE, 10000, None
+    )
+
+
+def main():
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir:
+        return 1
+    marker = os.path.join(runtime_dir, "tb-rotate-anim-prewarm")
+    try:
+        os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        return 0
+    except OSError:
+        return 1
+
+    try:
+        proxy = make_proxy()
+        serial, monitors, logical = current_state(proxy)
+        if not logical:
+            return 1
+        original = int(logical[0][3])
+        # 0/2 are the landscape shapes and 1/3 the portrait shapes.  Buffer
+        # allocation only depends on the shape, not on the exact angle.
+        other = 1 if original in (0, 2) else 0
+        apply_transform(proxy, serial, monitors, logical, other)
+        # Restore immediately; if the sensor changed the transform in the
+        # meantime, leave the new value alone.
+        serial, monitors, logical = current_state(proxy)
+        if logical and int(logical[0][3]) == other:
+            apply_transform(proxy, serial, monitors, logical, original)
+        return 0
+    except Exception as error:  # noqa: BLE001 - helper: log and give up
+        print(f"tb-rotate-prewarm: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
