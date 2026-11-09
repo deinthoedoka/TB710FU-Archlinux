@@ -14,6 +14,11 @@ install -Dm644 "$D/10-fastrpc.rules" /etc/udev/rules.d/10-fastrpc.rules
 install -Dm644 "$D/90-tb-backlight.rules" /etc/udev/rules.d/90-tb-backlight.rules
 install -Dm644 "$D/local.conf" /etc/fonts/local.conf
 
+echo "== GNOME system defaults (extensions, power button, idle)"
+install -Dm644 "$D/dconf/00-tb-power" /etc/dconf/db/local.d/00-tb-power
+install -Dm644 "$D/dconf/10-tb-shell" /etc/dconf/db/local.d/10-tb-shell
+dconf update
+
 echo "== units"
 install -Dm644 "$D/tb-ufs-pm.service" /etc/systemd/system/tb-ufs-pm.service
 install -Dm644 "$D/tb-volume-swap.service" /etc/systemd/system/tb-volume-swap.service

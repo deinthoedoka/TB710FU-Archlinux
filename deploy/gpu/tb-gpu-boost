@@ -10,6 +10,11 @@ simple_ondemand 仍然负责高负载时继续往上冲。
   触摸中/刚松手：629 MHz
   松手 1.2 s 后：422 MHz
   松手 4 s 后：231 MHz（回最低，不影响待机功耗）
+
+频率状态按单调时钟推进，不依赖输入事件：即使设备被拔掉、read 出错，
+循环也不会空转，且一定会在时限内回落。触摸设备热插拔时重新扫描，
+失效的 fd 立即关闭——旧版正是卡在已删除的测试设备上 100% 占 CPU，
+并让 GPU 最低频率永远停在 629 MHz。
 """
 import glob
 import os
@@ -24,8 +29,8 @@ IDLE_FREQ = 231000000
 POLL_MS = 20
 BOOST_HOLD = 1.2
 DECAY_AFTER = 4.0
+RESCAN_SECONDS = 2.0
 
-EV_SYN = 0x00
 EV_KEY = 0x01
 EV_ABS = 0x03
 BTN_TOUCH = 0x14a
@@ -73,6 +78,10 @@ def find_touch_devices():
         except OSError:
             continue
         low = name.lower()
+        # uinput 测试设备是临时节点，测试进程退出后 fd 会变成死句柄，
+        # 没有理由为它们抬频。
+        if 'denial-test' in low:
+            continue
         if 'touch' in low or 'pen' in low or 'stylus' in low:
             found.append((ev, name))
     return found
@@ -83,7 +92,8 @@ class Booster:
         self.min_path = os.path.join(gdir, 'min_freq')
         self.poll_path = os.path.join(gdir, 'polling_interval')
         self.level = IDLE_FREQ
-        self.touched = False
+        self.last_active = 0.0
+        self.active = False
 
     def set_level(self, freq, why):
         if freq == self.level:
@@ -92,18 +102,62 @@ class Booster:
             self.level = freq
             log('GPU 最低频率 -> %d MHz（%s）' % (freq // 1000000, why))
 
-    def poke(self):
+    def touch(self, now):
+        """有触摸活动：立即抬到最高档，之后的回落只看时钟。"""
+        self.last_active = now
+        self.active = True
         self.set_level(BOOST_FREQ, '触摸中')
-        self.touched = True
 
-    def idle_step(self, since_touch):
-        if not self.touched:
-            return
-        if since_touch > DECAY_AFTER:
+    def apply_decay(self, now):
+        """按时间推进频率档位；返回距离下一档还有多少秒。"""
+        if not self.active:
+            return None
+        since = now - self.last_active
+        if since > DECAY_AFTER:
             self.set_level(IDLE_FREQ, '空闲回落')
-            self.touched = False
-        elif since_touch > BOOST_HOLD:
+            self.active = False
+            return None
+        if since > BOOST_HOLD:
             self.set_level(HOLD_FREQ, '松手保持')
+            return DECAY_AFTER - since
+        return BOOST_HOLD - since
+
+
+class TouchWatcher:
+    """持有触摸设备 fd，热插拔时增删，绝不保留失效句柄。"""
+
+    def __init__(self):
+        self.fds = {}
+        self.next_scan = 0.0
+
+    def scan(self):
+        now = time.monotonic()
+        if now < self.next_scan:
+            return
+        self.next_scan = now + RESCAN_SECONDS
+        open_paths = {path for path, _ in self.fds.values()}
+        for path, name in find_touch_devices():
+            if path in open_paths:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            except OSError as exc:
+                log('打开 %s 失败: %s' % (path, exc))
+                continue
+            self.fds[fd] = (path, name)
+            log('监听触摸：%s（%s）' % (name, path))
+
+    def drop(self, fd):
+        path, name = self.fds.pop(fd, (None, None))
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if name:
+            log('触摸设备已移除：%s（%s）' % (name, path))
+
+    def paths(self):
+        return list(self.fds)
 
 
 def scan_events(data):
@@ -126,59 +180,46 @@ def main():
     gdir = gpu_dir()
     boost = Booster(gdir)
     write_attr(boost.poll_path, POLL_MS)
-    boost.level = IDLE_FREQ
+    # 启动就把下限收回最低档：上个实例异常退出时可能留在 629 MHz。
     write_attr(boost.min_path, IDLE_FREQ)
     log('GPU 加速守护启动：%s，simple_ondemand 采样 %d ms'
         % (gdir, POLL_MS))
 
-    devices = find_touch_devices()
-    fds = {}
-    for ev, name in devices:
-        try:
-            fds[os.open(ev, os.O_RDONLY | os.O_NONBLOCK)] = name
-        except OSError as exc:
-            log('打开 %s 失败: %s' % (ev, exc))
-    if not fds:
-        log('没找到触摸设备，只做调速参数设置')
-    else:
-        log('监听触摸：%s' % '、'.join(sorted(fds.values())))
+    watcher = TouchWatcher()
+    watcher.scan()
+    if not watcher.fds:
+        log('暂时没有触摸设备，继续等待热插拔')
 
-    last_touch = 0.0
-    finger_down = False
     while True:
         now = time.monotonic()
-        if boost.touched:
-            next_change = BOOST_HOLD if now - last_touch <= BOOST_HOLD else DECAY_AFTER
-            timeout = max(0.0, next_change - (now - last_touch))
-            timeout = min(timeout, 1.0)
+        watcher.scan()
+        wait = boost.apply_decay(now)
+        if wait is None:
+            timeout = RESCAN_SECONDS
         else:
-            timeout = 5.0
+            timeout = max(0.0, min(wait, RESCAN_SECONDS))
+
+        fds = watcher.paths()
         readable = []
         if fds:
             try:
-                readable, _, _ = select.select(list(fds), [], [], timeout)
-            except OSError:
+                readable, _, _ = select.select(fds, [], [], timeout)
+            except (OSError, ValueError):
                 readable = []
-        if readable:
-            for fd in readable:
-                try:
-                    data = os.read(fd, EVENT_SIZE * 32)
-                except OSError:
-                    continue
-                activity, down = scan_events(data)
-                if not activity:
-                    continue
-                if down is not None:
-                    finger_down = down
-                last_touch = time.monotonic()
-                boost.poke()
-        else:
-            if boost.touched:
-                since = time.monotonic() - last_touch
-                if finger_down and since < 10.0:
-                    continue          # 手指还按在屏幕上，保持高频
-                finger_down = False
-                boost.idle_step(since)
+
+        for fd in readable:
+            try:
+                data = os.read(fd, EVENT_SIZE * 32)
+            except OSError:
+                # ENODEV：设备已经不存在，留着它 select 会一直可读。
+                watcher.drop(fd)
+                continue
+            if not data:
+                watcher.drop(fd)
+                continue
+            activity, _ = scan_events(data)
+            if activity:
+                boost.touch(time.monotonic())
 
 
 if __name__ == '__main__':

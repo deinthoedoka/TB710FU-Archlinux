@@ -1,0 +1,14 @@
+[Unit]
+Description=TB710FU: clear a stale one-shot BCB command in misc
+After=local-fs.target
+ConditionPathExists=/dev/disk/by-partlabel/misc
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tb-clear-bcb --apply
+RemainAfterExit=yes
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

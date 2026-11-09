@@ -1,2 +1,2 @@
-# TB710FU: allow the video group to write the backlight (user-level brightness tools).
-ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="sy7758-backlight", RUN+="/usr/bin/chgrp video /sys/class/backlight/sy7758-backlight/brightness", RUN+="/usr/bin/chmod g+w /sys/class/backlight/sy7758-backlight/brightness"
+# TB710FU: 允许 video 组写背光，供用户级亮度持久化与熄屏背光电源控制使用
+ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="sy7758-backlight", RUN+="/usr/bin/chgrp video /sys/class/backlight/sy7758-backlight/brightness", RUN+="/usr/bin/chmod g+w /sys/class/backlight/sy7758-backlight/brightness", RUN+="/usr/bin/chgrp video /sys/class/backlight/sy7758-backlight/bl_power", RUN+="/usr/bin/chmod g+w /sys/class/backlight/sy7758-backlight/bl_power"

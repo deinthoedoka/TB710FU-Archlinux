@@ -1,0 +1,2 @@
+[org/gnome/shell]
+enabled-extensions=['tb-als@tb710fu', 'tb-rotate-anim@tb710fu', 'tb-android-windows@tb710fu', 'tb-display-mode@tb710fu', 'tb-power-menu@tb710fu']

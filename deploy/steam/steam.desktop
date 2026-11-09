@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Steam
+Comment=Steam gaming client (ARM64)
+Exec=/home/alarm/.local/share/Steam/steamrtarm64/steam %U
+Icon=steam
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;Game;
+MimeType=x-scheme-handler/steam;x-scheme-handler/steamlink;
+StartupNotify=true

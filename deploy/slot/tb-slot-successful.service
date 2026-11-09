@@ -1,0 +1,14 @@
+[Unit]
+Description=TB710FU: mark the current A/B slot as successfully booted (qbootctl -m)
+After=local-fs.target
+ConditionPathExists=/dev/disk/by-partlabel/boot_a
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tb-slot-successful --apply
+RemainAfterExit=yes
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

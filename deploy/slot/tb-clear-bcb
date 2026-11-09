@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""清掉 misc 里残留的一次性 BCB 命令（TB710FU）。
+
+背景
+----
+安装器（tb-install-run）在把 boot_a 写完以后会往 misc 写
+`bootonce-bootloader`，让主机端的 fastboot 收到“装完了”的信号：
+
+    printf 'bootonce-bootloader' | dd of=$MISC bs=1 conv=notrunc
+
+本机 ABL 在进过一次 fastboot 后并不会把这个命令清掉（实测重启若干次
+后 misc[0..31] 仍是 `bootonce-bootloader`），于是之后再正常重启，ABL
+又读到了这条一次性命令，直接进 bootloader —— 表现就是“重启后进了
+bootloader”，和 A/B 计数没有关系。
+
+这个服务在每次开机时把这类一次性命令清掉，保证以后的重启都正常进系统。
+只写 misc 的前 32 字节（BCB 的 command 字段），不碰 persist/modemst，
+也不碰 misc 里的其他字段（status/recovery/slot_suffix 保持原样）。
+"""
+
+import argparse
+import os
+import sys
+
+MISC = '/dev/disk/by-partlabel/misc'
+CMD_LEN = 32
+
+# 只清这些一次性命令，其它内容一律不动
+ONE_SHOT_PREFIXES = (
+    b'bootonce-',
+    b'boot-recovery',
+)
+
+
+def read_command(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    data = os.read(fd, CMD_LEN)
+    if len(data) < CMD_LEN:
+        raise OSError('misc 太短，读不到 BCB command 字段')
+    return data
+
+
+def main():
+    parser = argparse.ArgumentParser(description='清掉 misc 里残留的一次性 BCB 命令')
+    parser.add_argument('--apply', action='store_true', help='真正写入（默认只打印）')
+    args = parser.parse_args()
+
+    if not os.path.exists(MISC):
+        print('tb-clear-bcb: %s 不存在' % MISC)
+        return 1
+
+    fd = os.open(MISC, os.O_RDWR)
+    try:
+        command = read_command(fd)
+        text = command.split(b'\0', 1)[0]
+        if text == b'':
+            print('tb-clear-bcb: BCB 命令为空，无需处理')
+            return 0
+
+        known = any(text.startswith(prefix) for prefix in ONE_SHOT_PREFIXES)
+        print('tb-clear-bcb: BCB 命令 = %r%s'
+              % (text.decode('ascii', 'replace'),
+                 '' if known else '（不是一次性命令，保持不动）'))
+        if not known:
+            return 0
+
+        if not args.apply:
+            print('tb-clear-bcb: dry-run，未写入')
+            return 0
+
+        os.pwrite(fd, b'\0' * CMD_LEN, 0)
+        os.fsync(fd)
+
+        readback = read_command(fd)
+        if readback.split(b'\0', 1)[0] != b'':
+            print('tb-clear-bcb: 写回校验失败: %r' % readback)
+            return 1
+        print('tb-clear-bcb: 已清空 BCB 命令（读回校验通过）')
+        return 0
+    finally:
+        os.close(fd)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

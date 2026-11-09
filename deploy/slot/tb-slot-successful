@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""把当前 A/B 槽标记为“已成功启动”（TB710FU 版 qbootctl -m）。
+
+背景
+----
+高通 ABL 把 A/B 槽的元数据放在 GPT 分区属性字段的厂商位里
+（属性字节 48..63，首字节 = 54）。Qualcomm gpt-utils（qbootctl 就是
+它的用户态实现）的位定义是：
+
+    byte 54: bits 0..3  priority（0xF = 当前活动槽）
+             bits 4..5  tries_remaining
+             bit  6     successful_boot
+             bit  7     unbootable
+
+    #define AB_PARTITION_ATTR_SLOT_ACTIVE      (0x1 << 2)
+    #define AB_PARTITION_ATTR_BOOT_SUCCESSFUL  (0x1 << 6)
+    #define AB_PARTITION_ATTR_UNBOOTABLE       (0x1 << 7)
+    #define AB_SLOT_ACTIVE_VAL                 0xF
+
+实测证据（本机）：
+  * boot_a 原来是 0x1f（priority 0xF / tries 1 / 未成功 / 可启动），
+    tries 用完后 ABL 会把槽标成 unbootable，于是重启直接进 fastboot；
+  * boot_b = 0xf2 的 bit 6 是置上的（B 槽曾经成功启动过），与
+    successful = bit 6 吻合；
+  * 之前误把“成功”当成 bit 7 并置位，等于每次开机把当前槽标成
+    unbootable —— 之后每次重启都进 fastboot，`fastboot set_active a`
+    重写元数据后又能启动，现象完全对得上。
+
+所以“标记成功”= 置 bit 6（0x40）并清 bit 7（0x80）；qbootctl 0.2.2
+的 -m 正是这个语义（它还会顺手清 unbootable），下面按同样语义实现。
+
+不写 persist/modemst；只改 GPT 属性并重算两处 CRC。
+"""
+
+import argparse
+import fcntl
+import os
+import struct
+import sys
+import zlib
+
+BLKSSZGET = 0x1268
+GPT_SIG = b'EFI PART'
+HDR_FMT = '<8sIIIIQQQQ16sQIII'
+HDR_SIZE = struct.calcsize(HDR_FMT)          # 92
+ATTR_OFF = 48
+AB_BYTE_OFF = ATTR_OFF + 6                   # 54：厂商 AB 元数据首字节
+ATTR_SUCCESSFUL = 0x40                        # bit 6
+ATTR_UNBOOTABLE = 0x80                        # bit 7
+HDR_CRC_OFF = 16
+ARR_CRC_OFF = 88
+
+
+def crc32(data):
+    """UEFI CRC32 = 标准反射 CRC-32（与 zlib 一致）。"""
+    return zlib.crc32(data) & 0xffffffff
+
+
+def read_exact(fd, offset, size):
+    os.lseek(fd, offset, os.SEEK_SET)
+    buf = b''
+    while len(buf) < size:
+        chunk = os.read(fd, size - len(buf))
+        if not chunk:
+            raise IOError('short read at %d' % offset)
+        buf += chunk
+    return buf
+
+
+def write_exact(fd, offset, data):
+    os.lseek(fd, offset, os.SEEK_SET)
+    done = 0
+    while done < len(data):
+        done += os.write(fd, data[done:])
+
+
+def parse_header(blob):
+    f = struct.unpack(HDR_FMT, blob[:HDR_SIZE])
+    return {
+        'sig': f[0], 'hdrsize': f[2], 'hdrcrc': f[3],
+        'my_lba': f[5], 'alt_lba': f[6], 'first_usable': f[7],
+        'last_usable': f[8], 'entry_lba': f[10], 'n_entries': f[11],
+        'entry_size': f[12], 'arr_crc': f[13],
+    }
+
+
+def header_crc_ok(blob, hdr):
+    zeroed = bytearray(blob[:hdr['hdrsize']])
+    zeroed[HDR_CRC_OFF:HDR_CRC_OFF + 4] = b'\0\0\0\0'
+    return crc32(bytes(zeroed)) == hdr['hdrcrc']
+
+
+def part_name(entry):
+    raw = entry[56:128]
+    return raw.decode('utf-16-le', 'replace').split('\0')[0]
+
+
+def disk_of_partlabel(path):
+    """由 /dev/disk/by-partlabel/boot_a 找到整盘设备节点。"""
+    part = os.path.basename(os.path.realpath(path))
+    sysdir = '/sys/class/block/' + part
+    if not os.path.exists(os.path.join(sysdir, 'partition')):
+        raise SystemExit('%s 不是分区' % path)
+    parent = os.path.basename(os.path.dirname(os.path.realpath(sysdir)))
+    return '/dev/' + parent
+
+
+def sector_size(fd):
+    buf = bytearray(4)
+    fcntl.ioctl(fd, BLKSSZGET, buf, True)
+    return struct.unpack('<I', buf)[0]
+
+
+def load_gpt(fd, ss):
+    prim_blob = read_exact(fd, ss * 1, min(ss, 4096))
+    prim = parse_header(prim_blob)
+    if prim['sig'] != GPT_SIG:
+        raise SystemExit('主 GPT 签名不对')
+    if not header_crc_ok(prim_blob, prim):
+        raise SystemExit('主 GPT 头 CRC 不对')
+    arr_len = prim['n_entries'] * prim['entry_size']
+    arr = bytearray(read_exact(fd, ss * prim['entry_lba'], arr_len))
+    if crc32(bytes(arr)) != prim['arr_crc']:
+        raise SystemExit('主 GPT 分区表 CRC 不对')
+
+    bak_blob = read_exact(fd, ss * prim['alt_lba'], min(ss, 4096))
+    bak = parse_header(bak_blob)
+    if bak['sig'] != GPT_SIG:
+        raise SystemExit('备份 GPT 签名不对')
+    if not header_crc_ok(bak_blob, bak):
+        raise SystemExit('备份 GPT 头 CRC 不对')
+    bak_arr = read_exact(fd, ss * bak['entry_lba'], arr_len)
+    if crc32(bak_arr) != bak['arr_crc']:
+        raise SystemExit('备份 GPT 分区表 CRC 不对')
+    if bytes(arr) != bak_arr:
+        raise SystemExit('主/备份分区表内容不一致，先别写')
+
+    return prim, prim_blob, bytearray(arr), bak, bak_blob
+
+
+def current_slot_suffix():
+    for tok in open('/proc/cmdline').read().split():
+        if tok.startswith('androidboot.slot_suffix='):
+            return tok.split('=', 1)[1]
+        if tok.startswith('androidboot.slot='):
+            return '_' + tok.split('=', 1)[1]
+    raise SystemExit('/proc/cmdline 里没有 slot_suffix')
+
+
+def main():
+    ap = argparse.ArgumentParser(description='mark current A/B slot successful')
+    ap.add_argument('--apply', action='store_true', help='真正写入（默认只检查）')
+    ap.add_argument('--slot', help='槽后缀，默认取 /proc/cmdline')
+    args = ap.parse_args()
+
+    suffix = args.slot or current_slot_suffix()
+    disk = disk_of_partlabel('/dev/disk/by-partlabel/boot' + suffix)
+
+    fd = os.open(disk, os.O_RDWR | os.O_CLOEXEC)
+    try:
+        ss = sector_size(fd)
+        prim, prim_blob, arr, bak, bak_blob = load_gpt(fd, ss)
+
+        n, esz = prim['n_entries'], prim['entry_size']
+        changed = []
+        for i in range(n):
+            off = i * esz
+            entry = arr[off:off + esz]
+            if entry[:16] == b'\0' * 16:
+                break
+            name = part_name(entry)
+            if not name.endswith(suffix):
+                continue
+            # 只有带 AB 元数据的分区（低半字节是 priority，非 0）才处理
+            ab = entry[AB_BYTE_OFF]
+            if (ab & 0x0f) == 0:
+                continue
+            # 成功 = 置 bit 6；同时清掉 bit 7（unbootable），否则 ABL 会
+            # 认为这个槽不可启动，重启直接进 fastboot。
+            new_ab = (ab | ATTR_SUCCESSFUL) & ~ATTR_UNBOOTABLE & 0xff
+            if new_ab == ab:
+                changed.append((name, ab, ab))
+                continue
+            arr[off + AB_BYTE_OFF] = new_ab
+            changed.append((name, ab, new_ab))
+
+        if not changed:
+            raise SystemExit('没找到可标记的 %s 分区' % suffix)
+
+        print('槽 %s，磁盘 %s，扇区 %d' % (suffix, disk, ss))
+        for name, old, new in changed:
+            print('  %-18s byte54 0x%02x -> 0x%02x%s' %
+                  (name, old, new, '（已是成功）' if old == new else ''))
+        if not any(old != new for _, old, new in changed):
+            print('当前槽已经标记为成功，无需写入')
+            return 0
+        if not args.apply:
+            print('（检查模式，未写入；加 --apply 生效）')
+            return 0
+
+        new_arr_crc = crc32(bytes(arr))
+        if new_arr_crc == prim['arr_crc']:
+            print('分区表 CRC 未变，跳过')
+            return 0
+
+        arr_bytes = bytes(arr)
+        padded = arr_bytes + b'\0' * (-len(arr_bytes) % ss)
+        write_exact(fd, ss * prim['entry_lba'], padded)
+        write_exact(fd, ss * bak['entry_lba'], padded)
+
+        for hdr, blob in ((prim, prim_blob), (bak, bak_blob)):
+            h = bytearray(blob[:ss])
+            struct.pack_into('<I', h, ARR_CRC_OFF, new_arr_crc)
+            h[HDR_CRC_OFF:HDR_CRC_OFF + 4] = b'\0\0\0\0'
+            struct.pack_into('<I', h, HDR_CRC_OFF, crc32(bytes(h[:hdr['hdrsize']])))
+            write_exact(fd, ss * hdr['my_lba'], bytes(h))
+
+        os.fsync(fd)
+        print('已写入主/备份 GPT，CRC=0x%08x' % new_arr_crc)
+
+        # 回读校验
+        prim2, _, arr2, bak2, _ = load_gpt(fd, ss)
+        for i in range(n):
+            off = i * esz
+            name = part_name(arr2[off:off + esz])
+            if name.endswith(suffix) and (arr2[off + AB_BYTE_OFF] & 0x0f):
+                print('  校验 %-18s byte54=0x%02x' % (name, arr2[off + AB_BYTE_OFF]))
+        return 0
+    finally:
+        os.close(fd)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
