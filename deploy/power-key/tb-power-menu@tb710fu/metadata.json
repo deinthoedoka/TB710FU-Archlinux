@@ -1,0 +1,7 @@
+{
+  "uuid": "tb-power-menu@tb710fu",
+  "name": "TB710FU 电源菜单",
+  "description": "电源键长按时显示触屏电源菜单（重启 / 关机 / 取消）。由 tb-power-key 守护进程通过 D-Bus 调用；菜单是 shell 模态对话框，锁屏界面之上也能显示。",
+  "shell-version": ["51"],
+  "version": 1
+}

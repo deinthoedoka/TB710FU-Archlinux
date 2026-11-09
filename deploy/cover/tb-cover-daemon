@@ -27,9 +27,11 @@ LOCK_USER = 'alarm'
 STARTUP_CLOSED_DELAY = 15.0
 DEBOUNCE = 0.06
 # 合盖后延迟这么久再挂起；期间开盖就不挂（避免手滑合盖就睡）。
-# 想彻底关掉合盖挂起：touch /etc/tb-cover-no-suspend
+# 本机的 s2idle 唤醒不可靠：UFS 控制器偶尔不回来，只能长按电源强制重启。
+# 所以合盖挂起改成 opt-in，只有 touch /etc/tb-cover-suspend 才启用；
+# 默认合盖 = 关背光 + 锁屏，系统保持运行，开盖立刻唤醒。
 SUSPEND_AFTER = 5.0
-SUSPEND_OPTOUT = '/etc/tb-cover-no-suspend'
+SUSPEND_ENABLE = '/etc/tb-cover-suspend'
 
 BLANK_ON = b'0'
 BLANK_OFF = b'4'
@@ -43,7 +45,11 @@ FLAG_EDGE_FALLING = 1 << 5
 
 EV_SYN = 0x00
 EV_KEY = 0x01
-KEY_WAKEUP = 247
+# KEY_WAKEUP is 143 in linux/input-event-codes.h. 247 is KEY_RFKILL: the
+# kernel's rfkill-input handler toggles every radio on it, so the old value
+# soft-blocked Wi-Fi and Bluetooth on every lid open (NetworkManager logged
+# "Wi-Fi now disabled by radio killswitch").
+KEY_WAKEUP = 143
 
 INPUT_EVENT = struct.Struct('llHHi')
 
@@ -243,10 +249,12 @@ def lock_sessions():
 def suspend_when_still_closed(fd):
     """合盖后延迟挂起；延迟内开盖就取消。
 
-    只关背光不挂起时 SoC 仍然醒着（实测 ~2.8 W），放包里一晚就掉光电池。
-    挂起由 systemd 做，唤醒要按电源键（GPIO66 不是唤醒源）。
+    只关背光不挂起时 SoC 仍然醒着（实测 ~2.8 W），放包里一晚就掉光电池，
+    但本机 s2idle 经常唤不回来，所以默认不挂起；需要省电的人自己 touch
+    /etc/tb-cover-suspend 打开。挂起由 systemd 做，唤醒要按电源键
+    （GPIO66 不是唤醒源）。
     """
-    if os.path.exists(SUSPEND_OPTOUT):
+    if not os.path.exists(SUSPEND_ENABLE):
         return
 
     def worker():

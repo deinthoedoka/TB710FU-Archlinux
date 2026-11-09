@@ -1,0 +1,12 @@
+[Unit]
+Description=TB710FU: keep the panel backlight in sync with DRM DPMS
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tb-backlight-dpms
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

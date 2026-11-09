@@ -1,0 +1,13 @@
+[Unit]
+Description=TB710FU power key long-press handler
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tb-power-key
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

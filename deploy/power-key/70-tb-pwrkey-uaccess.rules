@@ -1,0 +1,3 @@
+# TB710FU: let the logged-in user read the PMIC power key so a long press can
+# show the power menu instead of relying on the PMIC hardware reset.
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{name}=="pmic_pwrkey", TAG+="uaccess"

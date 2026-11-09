@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""让内屏背光跟随 DRM DPMS（TB710FU）。
+
+sy7758 背光是独立的 I2C 设备，设备树里没有和面板关联，所以面板 DPMS Off
+（GNOME 自动熄屏 / 锁屏后 gsd-power 会调 DisplayConfig.PowerSaveMode）时
+只是 DSI 停止送帧，背光 LED 仍然亮着 —— 看起来就是“黑屏但屏幕发亮”。
+
+这里轮询 DSI 连接器的 dpms 属性：
+    Off -> bl_power=1（真正断电）
+    On  -> 等一帧再 bl_power=0（避免先亮出熄屏前的旧画面）
+
+100ms 轮询一次 sysfs，开销可以忽略。
+"""
+
+import glob
+import os
+import sys
+import time
+
+POLL_S = 0.1
+WARMUP_S = 0.05          # DPMS On 后等画面先上来再开背光
+PANEL_GLOB = '/sys/class/drm/card*-DSI-*'
+BL_POWER_GLOB = '/sys/class/backlight/*/bl_power'
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def write(path, value):
+    try:
+        with open(path, 'w') as f:
+            f.write(value)
+        return True
+    except OSError as e:
+        print('tb-backlight-dpms: 写 %s 失败: %s' % (path, e), file=sys.stderr, flush=True)
+        return False
+
+
+def panel_dpms():
+    for path in sorted(glob.glob(PANEL_GLOB)):
+        if os.path.basename(path).startswith('card') and 'DSI' in path:
+            state = read(os.path.join(path, 'dpms'))
+            if state is not None:
+                return state
+    return None
+
+
+def backlights():
+    return sorted(glob.glob(BL_POWER_GLOB))
+
+
+def set_power(off):
+    for path in backlights():
+        want = '1' if off else '0'
+        if read(path) != want:
+            write(path, want)
+
+
+def main():
+    last = panel_dpms()
+    if last is None:
+        print('tb-backlight-dpms: 找不到 DSI 面板的 dpms 节点', file=sys.stderr, flush=True)
+        return 1
+    # 启动时先对齐一次，兜底上次会话/崩溃留下的状态
+    set_power(last == 'Off')
+
+    while True:
+        time.sleep(POLL_S)
+        state = panel_dpms()
+        if state is None or state == last:
+            continue
+        if state == 'Off':
+            set_power(True)
+            print('tb-backlight-dpms: dpms Off -> bl_power=1', flush=True)
+        else:
+            time.sleep(WARMUP_S)
+            set_power(False)
+            print('tb-backlight-dpms: dpms On  -> bl_power=0', flush=True)
+        last = state
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)
