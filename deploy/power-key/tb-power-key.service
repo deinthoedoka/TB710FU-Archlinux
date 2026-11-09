@@ -1,5 +1,5 @@
 [Unit]
-Description=TB710FU power key long-press handler
+Description=TB710FU power key handler (lock + screen off, long-press menu)
 After=graphical-session.target
 PartOf=graphical-session.target
 

@@ -1,0 +1,164 @@
+#!/usr/bin/python3
+"""TB710FU idle guard: stop the Android runtime after its last task exits.
+
+droidloom never quiesces itself: once anything starts it, the cell keeps
+running, Android keeps cached processes (its LMKD compatibility endpoint never
+kills), and AlarmManager keeps arming RTC alarms that wake the tablet out of
+suspend. This guard watches the presenter's task events in the journal and
+stops the user runtime a grace period after the live task set empties.
+
+Rules the device owner chose on 2026-11-09:
+  - a minimized or hidden window keeps its Android task, so minimizing is not
+    treated as an exit;
+  - there is no keep-alive list. Any live task holds the runtime open;
+  - the grace period is 120 seconds, which also covers "close app A, open
+    app B" without tearing Android down between them.
+
+Task events are the only host-visible signal droidloom publishes today:
+graphics/droidloom-wayland/src/main.rs prints one line when it maps a task to
+an xdg_toplevel and one when Android retires it. If those lines ever change,
+the guard stops making decisions rather than guessing, and Android simply
+stays resident (the behaviour before this guard existed).
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+
+GRACE = float(os.environ.get("TB_DROIDLOOM_IDLE_GRACE", "120"))
+POLL = float(os.environ.get("TB_DROIDLOOM_IDLE_POLL", "5"))
+UID = os.getuid()
+
+ACTIVATION = re.compile(r"host activation: task object=(\d+)")
+DESTROYED = re.compile(r"destroyed terminal Android xdg_toplevel object=(\d+)")
+CELL_START = re.compile(r"started cell u\d+")
+# Anything that could be mid-launch or mid-install when we are about to stop.
+# Match argv[0], not the whole command line: a shell that merely mentions these
+# names in a script must not hold the runtime open forever.
+BUSY_BASENAMES = {"droidloomctl", "tb-android-launch", "droidloom-apk-installer"}
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+class Guard:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.live: set[str] = set()
+        self.cell_running = False
+        self.idle_since: float | None = None
+        self.journal_alive = True
+
+    def note(self, message: str) -> None:
+        """Apply one journal message to the live-task state."""
+        with self.lock:
+            activation = ACTIVATION.search(message)
+            if activation:
+                self.live.add(activation.group(1))
+                self.cell_running = True
+                self.idle_since = None
+                return
+            destroyed = DESTROYED.search(message)
+            if destroyed:
+                self.live.discard(destroyed.group(1))
+                if not self.live:
+                    self.idle_since = time.monotonic()
+                return
+            if CELL_START.search(message):
+                # A fresh cell has no tasks: the clock starts immediately, so a
+                # runtime started by hand without an app is stopped too.
+                self.live.clear()
+                self.cell_running = True
+                self.idle_since = time.monotonic()
+
+    def reader(self) -> None:
+        process = subprocess.Popen(
+            ["journalctl", "--user", "--boot", "--follow", "-o", "json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        for line in process.stdout:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            self.note(entry.get("MESSAGE", ""))
+        self.journal_alive = False
+        log("idle guard: journal stream ended, no longer deciding")
+
+
+def busy_with_launch() -> bool:
+    """True while a launch or install is in flight under our UID."""
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != UID:
+                continue
+            with open(f"/proc/{pid}/cmdline", "rb") as handle:
+                argv0 = handle.read().split(b"\0", 1)[0].decode(errors="replace")
+        except OSError:
+            continue
+        if os.path.basename(argv0) in BUSY_BASENAMES:
+            return True
+    return False
+
+
+def active(unit: str) -> bool:
+    return subprocess.run(
+        ["systemctl", "--user", "is-active", "--quiet", unit], check=False
+    ).returncode == 0
+
+
+def stop_runtime() -> None:
+    subprocess.run(["systemctl", "--user", "stop", "droidloom.service"], check=False)
+    # droidloomd spawns its automatic-ADB fork-server through systemd-run while
+    # it tears down, so that transient unit can outlive the runtime by a second.
+    # Keep stopping it until it is really gone.
+    for _ in range(10):
+        if not active("droidloom-adb-server.service"):
+            break
+        subprocess.run(
+            ["systemctl", "--user", "stop", "--no-block", "droidloom-adb-server.service"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(2)
+
+
+def main() -> int:
+    guard = Guard()
+    thread = threading.Thread(target=guard.reader, daemon=True)
+    thread.start()
+    log(f"idle guard: grace={GRACE:.0f}s, watching this boot's task events")
+    while guard.journal_alive:
+        time.sleep(POLL)
+        with guard.lock:
+            idle = guard.idle_since
+            running = guard.cell_running
+            tasks = len(guard.live)
+        if not running or tasks or idle is None:
+            stopped_logged = False
+            continue
+        if time.monotonic() - idle < GRACE:
+            continue
+        if busy_with_launch():
+            log("idle guard: a launch or install is in flight, deferring")
+            continue
+        log(f"idle guard: no Android task for {GRACE:.0f}s, stopping the runtime")
+        stop_runtime()
+        with guard.lock:
+            guard.cell_running = False
+            guard.idle_since = None
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

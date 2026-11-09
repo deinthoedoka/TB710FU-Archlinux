@@ -1,36 +1,33 @@
 #!/usr/bin/env python3
-"""Power-key long-press handler for the TB710FU tablet.
+"""Power-key handler for the TB710FU tablet.
 
-The PMIC power key is handled by two layers on this device:
+Two layers act on the PMIC power key:
 
-* a short press is grabbed by gnome-settings-daemon through the shell's key
-  grabber and currently suspends the tablet;
-* a long press is a PMIC hardware reset configured by the bootloader, so
-  userspace never gets a chance to react before the SoC is reset.
+* a short press belongs to this daemon: it locks the session and powers the
+  panel down (Mutter's PowerSaveMode=1; tb-backlight-dpms mirrors the
+  backlight).  The system is not suspended from here any more -- suspend only
+  happens through the automatic-suspend setting (Settings -> Power -> Power
+  Saving).  That also removes the wake-press race: a press replayed from the
+  evdev queue after resume used to suspend the tablet again;
+* a long press asks the tb-power-menu shell extension for a touch menu with
+  Restart / Power Off / Cancel.  A press held past the PMIC's own threshold
+  (configured by the bootloader, roughly 12 s) still forces a hardware
+  power-off in the PON block.
 
-This daemon reads the raw pmic_pwrkey evdev node (the shell's accelerator grab
-is compositor-level, the evdev stream stays readable) and gives long presses a
-software meaning:
+The daemon reads the raw pmic_pwrkey evdev node (the shell's accelerator grab
+is compositor-level, the evdev stream stays readable).  Key events that were
+queued while the system was suspended are dropped: the press that wakes the
+tablet must not turn around and lock or suspend it again.
 
-* short press  -> wake when the panel is dark (the DPMS wake lights
-                  it; suspending here would black it out again at once), else
-                  suspend through org.gnome.SessionManager (same as before)
-* long press   -> ask the tb-power-menu shell extension to show a touch menu
-                  with Restart / Power Off / Cancel
-
-gnome-settings-daemon's power-button-action is set to "nothing" so it does not
-suspend on the press that starts a long press.  The PMIC reset still happens if
-the key is held past its hardware threshold (the menu appears after ~1s, so a
-normal long press is released well before that).
-
-Run as the logged-in user (it needs the session bus); the udev rule adds a
-uaccess ACL for the pmic_pwrkey device.
+Run as the logged-in user (it needs the session bus); udev rules add the
+uaccess ACLs for the input devices it reads.
 """
 
 import glob
 import os
 import signal
 import struct
+import subprocess
 import sys
 import time
 
@@ -52,6 +49,7 @@ DRY_RUN = os.environ.get("TB_POWER_DRY_RUN") == "1"
 DEVICE_OVERRIDE = os.environ.get("TB_POWER_KEY_DEVICE")
 LONG_PRESS_MS = int(os.environ.get("TB_POWER_LONG_MS", "1000"))
 RESUME_SUPPRESS_S = 3.0
+RESUME_STALE_S = 60.0
 ACTION_COOLDOWN_S = 0.6
 # tb-backlight-dpms mirrors the DPMS state here: 0 means lit, anything else
 # means the panel backlight is powered down.
@@ -59,11 +57,28 @@ BL_POWER_GLOB = "/sys/class/backlight/*/bl_power"
 EVENT_FORMAT = "llHHi"
 EVENT_SIZE = struct.calcsize(EVENT_FORMAT)
 
+SCREENSAVER = "org.gnome.ScreenSaver"
+SCREENSAVER_PATH = "/org/gnome/ScreenSaver"
+SCREENSAVER_IFACE = "org.gnome.ScreenSaver"
+MUTTER_CONFIG = "org.gnome.Mutter.DisplayConfig"
+MUTTER_PATH = "/org/gnome/Mutter/DisplayConfig"
+PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
+POWER_MENU = "org.tb.PowerMenu"
+POWER_MENU_PATH = "/org/tb/PowerMenu"
 SESSION_MANAGER = "org.gnome.SessionManager"
 SESSION_PATH = "/org/gnome/SessionManager"
 SESSION_IFACE = "org.gnome.SessionManager"
-POWER_MENU = "org.tb.PowerMenu"
-POWER_MENU_PATH = "/org/tb/PowerMenu"
+
+# Input devices that bring the panel back up when the daemon blanked it
+# itself (touch, cover, any key).  GNOME's own idle blank is handled by
+# gsd-power and does not need this.
+AUX_DEVICE_NAMES = (
+    "NVTCapacitiveTouchScreen",
+    "TB710FU Volume Rocker",
+    "tb-cover-wake",
+    "gpio-keys",
+    "pmic_resin",
+)
 
 
 def log(message):
@@ -75,12 +90,17 @@ class PowerKey:
         self._session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self._system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
         self._fd = None
+        self._aux = {}  # device name -> fd
+        self._aux_retry = 0
         self._pressed = False
         self._long_fired = False
         self._long_timer = 0
         self._suppress_until = 0.0
         self._ignore_release = False
         self._last_action = 0.0
+        self._suspended = False
+        self._resume_realtime = 0.0
+        self._blanked_by_us = False
         self._loop = GLib.MainLoop()
 
         self._system.signal_subscribe(
@@ -95,20 +115,40 @@ class PowerKey:
         _signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._quit)
         _signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self._quit)
 
+    # --- lifecycle -------------------------------------------------------
+
     def _quit(self):
         log("stopping")
         if self._fd is not None:
             os.close(self._fd)
             self._fd = None
+        for name in list(self._aux):
+            self._close_aux(name)
         self._loop.quit()
         return GLib.SOURCE_REMOVE
 
     def _on_prepare_for_sleep(self, connection, sender, path, interface,
                               signal_name, parameters):
         about_to_suspend = parameters.unpack()[0]
-        if not about_to_suspend:
-            self._suppress_until = time.monotonic() + RESUME_SUPPRESS_S
-            log("resumed, suppressing keys for a moment")
+        if about_to_suspend:
+            # From here on nothing can arrive except the wake press(es).
+            self._suspended = True
+            self._cancel_long_timer()
+            self._pressed = False
+            self._ignore_release = False
+            self._long_fired = False
+            self._blanked_by_us = False
+            log("suspending; queued key events will be dropped")
+            return
+        self._suspended = False
+        self._suppress_until = time.monotonic() + RESUME_SUPPRESS_S
+        self._resume_realtime = time.time()
+        if self._pressed:
+            # A press seen before the suspend signal must not act now.
+            self._ignore_release = True
+        log("resumed, suppressing keys for a moment")
+
+    # --- pmic_pwrkey -----------------------------------------------------
 
     def _find_device(self):
         if DEVICE_OVERRIDE:
@@ -154,10 +194,10 @@ class PowerKey:
             log(f"read failed: {error}")
             return GLib.SOURCE_REMOVE
         for offset in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
-            _, _, event_type, code, value = struct.unpack_from(
+            sec, usec, event_type, code, value = struct.unpack_from(
                 EVENT_FORMAT, data, offset)
             if event_type == 1 and code == KEY_POWER:
-                self._on_power(value)
+                self._on_power(value, sec + usec / 1e6)
         return GLib.SOURCE_CONTINUE
 
     def _reopen(self):
@@ -165,40 +205,71 @@ class PowerKey:
             return GLib.SOURCE_CONTINUE
         return GLib.SOURCE_REMOVE
 
-    def _on_power(self, value):
+    def _on_power(self, value, event_time):
         now = time.monotonic()
         if value == 2:  # autorepeat
+            return
+        if self._suspended:
+            if value == 1:
+                log("power key while suspended, ignored")
             return
         if value == 1:
             if self._pressed:
                 return
             self._pressed = True
             self._long_fired = False
+            if self._is_stale(event_time):
+                # Queued while the system was asleep, processed after the
+                # resume signal: this is the wake press, not a new one.
+                self._ignore_release = True
+                log("stale press from before resume, ignored")
+                return
             if now < self._suppress_until:
                 self._ignore_release = True
                 log("ignoring key during resume window")
                 return
             self._ignore_release = False
-            if self._long_timer:
-                GLib.source_remove(self._long_timer)
-            self._long_timer = GLib.timeout_add(LONG_PRESS_MS,
-                                                self._on_long_press)
+            if self._screen_dark():
+                # A press on a dark panel is the wake press: light it up and
+                # never lock it again from the same press.  A hold still opens
+                # the power menu.
+                self._ignore_release = True
+                self._wake()
+                self._start_long_timer()
+                return
+            self._start_long_timer()
             return
 
         # value == 0: release
         if not self._pressed:
             return
         self._pressed = False
+        self._cancel_long_timer()
+        if self._long_fired:
+            self._long_fired = False
+            self._ignore_release = False
+            return
         if self._ignore_release:
             self._ignore_release = False
             return
+        self._short_press()
+
+    def _is_stale(self, event_time):
+        """Whether the event predates the most recent resume."""
+        if not self._resume_realtime:
+            return False
+        delta = self._resume_realtime - event_time
+        return 0 <= delta < RESUME_STALE_S
+
+    def _start_long_timer(self):
+        self._cancel_long_timer()
+        self._long_timer = GLib.timeout_add(LONG_PRESS_MS,
+                                            self._on_long_press)
+
+    def _cancel_long_timer(self):
         if self._long_timer:
             GLib.source_remove(self._long_timer)
             self._long_timer = 0
-        if self._long_fired:
-            self._long_fired = False
-            return
-        self._short_press()
 
     def _on_long_press(self):
         self._long_timer = 0
@@ -211,6 +282,8 @@ class PowerKey:
             log("power menu unavailable, using the session shutdown dialog")
             self._call_session("Shutdown")
         return GLib.SOURCE_REMOVE
+
+    # --- short press: lock + panel off -----------------------------------
 
     def _screen_dark(self):
         """Whether the panel backlight is powered down (DPMS mirror)."""
@@ -228,13 +301,102 @@ class PowerKey:
             return
         self._last_action = time.monotonic()
         if self._screen_dark():
-            # A press on a dark screen belongs to the wake: the DPMS wake
-            # lights the panel, and suspending here would black it out again at
-            # once (the screen-off model on this tablet is DPMS, not sleep).
-            log("short press while dark: wake press, not suspending")
             return
-        log("short press -> suspend")
-        self._call_session("Suspend")
+        log("short press -> lock + screen off")
+        self._screen_off()
+
+    def _screen_off(self):
+        if DRY_RUN:
+            log("dry-run: would lock the session and power the panel down")
+            return
+        self._lock_session()
+        if self._set_power_save_mode(1):
+            self._blanked_by_us = True
+        else:
+            log("panel power-down unavailable; the session is locked")
+
+    def _wake(self):
+        if not self._blanked_by_us:
+            # GNOME's own idle blank: gsd-power unblanks on the same input.
+            return
+        if self._set_power_save_mode(0):
+            self._blanked_by_us = False
+            log("panel back on")
+
+    def _lock_session(self):
+        # The org.gnome.ScreenSaver stub proxies to gnome-shell's ScreenShield.
+        # SetActive(true) engages the shield at once.  Lock() forces the lock
+        # even when the screen is already shielded, but it can block in that
+        # state, so it is only fired asynchronously with a short timeout.
+        try:
+            self._session.call_sync(
+                SCREENSAVER,
+                SCREENSAVER_PATH,
+                SCREENSAVER_IFACE,
+                "SetActive",
+                GLib.Variant("(b)", [True]),
+                None,
+                Gio.DBusCallFlags.NONE,
+                2000,
+                None,
+            )
+        except Exception as error:  # noqa: BLE001 - daemon: log and fall back
+            log(f"ScreenSaver.SetActive failed: {error}")
+        try:
+            self._session.call(
+                SCREENSAVER,
+                SCREENSAVER_PATH,
+                SCREENSAVER_IFACE,
+                "Lock",
+                None,
+                None,
+                Gio.DBusCallFlags.NONE,
+                1500,
+                None,
+                self._on_lock_done,
+                None,
+            )
+        except Exception as error:  # noqa: BLE001
+            log(f"ScreenSaver.Lock call failed: {error}")
+            self._lock_via_loginctl()
+
+    def _on_lock_done(self, connection, result, user_data=None):
+        try:
+            connection.call_finish(result)
+            log("session locked")
+        except Exception as error:  # noqa: BLE001
+            log(f"ScreenSaver.Lock failed: {error}")
+            self._lock_via_loginctl()
+
+    def _lock_via_loginctl(self):
+        try:
+            subprocess.run(["loginctl", "lock-sessions"], check=False,
+                           timeout=5)
+            log("loginctl lock-sessions requested")
+        except Exception as error:  # noqa: BLE001
+            log(f"loginctl lock failed: {error}")
+
+    def _set_power_save_mode(self, mode):
+        try:
+            self._session.call_sync(
+                MUTTER_CONFIG,
+                MUTTER_PATH,
+                PROPERTIES_IFACE,
+                "Set",
+                GLib.Variant("(ssv)", [
+                    MUTTER_CONFIG,
+                    "PowerSaveMode",
+                    GLib.Variant("i", mode),
+                ]),
+                None,
+                Gio.DBusCallFlags.NONE,
+                2000,
+                None,
+            )
+            return True
+        except Exception as error:  # noqa: BLE001
+            log(f"PowerSaveMode {mode} failed: {error}")
+            return False
 
     def _open_power_menu(self):
         if DRY_RUN:
@@ -276,26 +438,88 @@ class PowerKey:
             log(f"{method} requested")
         except Exception as error:  # noqa: BLE001 - daemon: keep running
             log(f"{method} failed: {error}")
-            if method == "Suspend":
-                try:
-                    self._system.call_sync(
-                        "org.freedesktop.login1",
-                        "/org/freedesktop/login1",
-                        "org.freedesktop.login1.Manager",
-                        "Suspend",
-                        GLib.Variant("(b)", [False]),
-                        None,
-                        Gio.DBusCallFlags.NONE,
-                        5000,
-                        None,
-                    )
-                    log("logind Suspend requested")
-                except Exception as logind_error:  # noqa: BLE001
-                    log(f"logind Suspend failed: {logind_error}")
+
+    # --- wake on any input while we hold the panel dark ------------------
+
+    def _find_aux(self):
+        found = {}
+        for entry in sorted(os.listdir("/sys/class/input")):
+            if not entry.startswith("event"):
+                continue
+            name_path = f"/sys/class/input/{entry}/device/name"
+            try:
+                with open(name_path, encoding="utf-8") as handle:
+                    name = handle.read().strip()
+            except OSError:
+                continue
+            if name in AUX_DEVICE_NAMES and name not in self._aux:
+                found[name] = f"/dev/input/{entry}"
+        return found
+
+    def _open_aux(self):
+        for name, path in self._find_aux().items():
+            if name in self._aux:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+            except OSError as error:
+                log(f"cannot open {path} ({name}): {error}")
+                continue
+            self._aux[name] = fd
+            GLib.io_add_watch(fd, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN,
+                              self._on_aux_readable, name)
+            log(f"waking on {name} ({path})")
+        missing = [name for name in AUX_DEVICE_NAMES
+                   if name not in self._aux]
+        if missing and not self._aux_retry:
+            self._aux_retry = GLib.timeout_add_seconds(5, self._retry_aux)
+        return GLib.SOURCE_REMOVE
+
+    def _retry_aux(self):
+        self._aux_retry = 0
+        self._open_aux()
+        return GLib.SOURCE_REMOVE
+
+    def _close_aux(self, name):
+        fd = self._aux.pop(name, None)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not self._aux_retry:
+            self._aux_retry = GLib.timeout_add_seconds(5, self._retry_aux)
+
+    def _on_aux_readable(self, fd, condition, name):
+        if condition & (GLib.IOCondition.HUP | GLib.IOCondition.ERR):
+            self._close_aux(name)
+            return GLib.SOURCE_REMOVE
+        try:
+            data = os.read(fd, EVENT_SIZE * 64)
+        except OSError:
+            self._close_aux(name)
+            return GLib.SOURCE_REMOVE
+        # Only real presses light the panel up again.  Switch events are
+        # excluded on purpose: gpio-keys reports SW_LID when the cover closes
+        # and unblanking there would fight the cover daemon's backlight off.
+        activity = False
+        for offset in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
+            _, _, event_type, _, value = struct.unpack_from(
+                EVENT_FORMAT, data, offset)
+            if event_type == 1 and value == 1:  # EV_KEY, press
+                activity = True
+                break
+        if activity and self._blanked_by_us:
+            log(f"{name} activity, lighting the panel")
+            self._wake()
+        return GLib.SOURCE_CONTINUE
+
+    # --- main ------------------------------------------------------------
 
     def run(self):
         if not self._open_device():
             GLib.timeout_add_seconds(2, self._reopen)
+        self._open_aux()
         log(f"ready (long press {LONG_PRESS_MS} ms)")
         self._loop.run()
 

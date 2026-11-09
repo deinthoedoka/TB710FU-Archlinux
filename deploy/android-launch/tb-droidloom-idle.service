@@ -1,0 +1,19 @@
+[Unit]
+Description=TB710FU Android idle guard (stop droidloom after the last task exits)
+Documentation=file:/usr/local/bin/tb-droidloom-idle
+After=graphical-session.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tb-droidloom-idle
+# Seconds to wait after the last Android task disappears.
+Environment=TB_DROIDLOOM_IDLE_GRACE=120
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+# Deliberately not PartOf/Wants=droidloom.service: the guard has to outlive the
+# runtime it stops, and start again after the next click brings it back.
+WantedBy=default.target

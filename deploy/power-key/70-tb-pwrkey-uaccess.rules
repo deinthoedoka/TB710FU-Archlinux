@@ -1,3 +1,10 @@
-# TB710FU: let the logged-in user read the PMIC power key so a long press can
-# show the power menu instead of relying on the PMIC hardware reset.
+# TB710FU: let the logged-in user read the input devices the power-key daemon
+# needs: the PMIC power key (lock/screen-off on short press, power menu on a
+# long press) and the devices that bring the panel back up again (touch,
+# cover-open wake, volume rocker).
 ACTION=="add|change", SUBSYSTEM=="input", ATTRS{name}=="pmic_pwrkey", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{name}=="NVTCapacitiveTouchScreen", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{name}=="TB710FU Volume Rocker", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{name}=="tb-cover-wake", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{name}=="gpio-keys", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{name}=="pmic_resin", TAG+="uaccess"
