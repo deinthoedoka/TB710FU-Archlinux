@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""常驻持住环境光 + 加速度计的 claim（TB710FU）。
+
+iio-sensor-proxy 只有在有客户端 ClaimLight()/ClaimAccelerometer() 时才真正
+启动传感器，而 Claim 需要 polkit 的 net.hadess.SensorProxy.claim-sensor
+授权（root 恒通过；会话外的进程会被拒）。
+
+几个坑（都是踩过的）：
+  * claim 是「每个 D-Bus 发送方一次」的：同一个连接再 Claim 只是 no-op。
+    重试必须换新连接。
+  * 开机时 iio-sensor-proxy 的 name 先出现、传感器后注册；抢在注册前 claim
+    会被当成 no-op 记下来，之后即使传感器出现了也不会开始收数据（GNOME 的
+    mutter 就是这样丢掉自动旋转的）。所以 claim 后要确认 Has* 为真，否则换
+    连接重试。
+  * iio-sensor-proxy 重启（升级/崩溃/udev 拔出设备）会让所有 claim 失效，
+    所以这里监听 name owner，服务一回来就重新 claim。
+
+加速度计也一起认领：mutter 在传感器还没注册时发出的 ClaimAccelerometer 会
+被记成 no-op，is_claimed 却是 true；我们这里把传感器真正点亮后，mutter 就能
+收到 AccelerometerOrientation 的变化并自动旋转。
+"""
+
+import sys
+
+import gi
+
+gi.require_version('Gio', '2.0')
+
+from gi.repository import Gio, GLib
+
+NAME = 'net.hadess.SensorProxy'
+PATH = '/net/hadess/SensorProxy'
+IFACE = 'net.hadess.SensorProxy'
+ADDRESS = 'unix:path=/run/dbus/system_bus_socket'
+
+FIRST_DELAY_S = 6         # 等 iio-sensor-proxy / DSP 把传感器注册好
+RETRY_S = 3
+MAX_ATTEMPTS = 20         # 约一分钟
+
+state = {
+    'attempts': 0,
+    'conn': None,
+    'proxy': None,
+    'done': False,
+}
+
+def has_props(proxy):
+    """读取 HasAmbientLight / HasAccelerometer（缓存属性可能过期，显式 Get）。"""
+    result = {}
+    for name in ('HasAmbientLight', 'HasAccelerometer'):
+        try:
+            reply = proxy.get_connection().call_sync(
+                NAME, PATH,
+                'org.freedesktop.DBus.Properties', 'Get',
+                GLib.Variant('(ss)', [IFACE, name]),
+                None, Gio.DBusCallFlags.NONE, 2000, None)
+            value = reply.unpack()[0]
+            if isinstance(value, GLib.Variant):
+                value = value.unpack()
+            result[name] = bool(value)
+        except Exception:
+            result[name] = False
+    return result
+
+
+def make_claim():
+    """新连接 + 新 proxy：claim 按 D-Bus 发送方记，重试必须换连接。"""
+    conn = Gio.DBusConnection.new_for_address_sync(
+        ADDRESS,
+        Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
+        Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+        None, None)
+    proxy = Gio.DBusProxy.new_sync(
+        conn, Gio.DBusProxyFlags.NONE, None, NAME, PATH, IFACE, None)
+    return conn, proxy
+
+
+def drop_claim():
+    if state['conn'] is not None:
+        try:
+            state['conn'].close_sync(None)
+        except Exception:
+            pass
+    state.update(conn=None, proxy=None, done=False)
+
+
+def claim_round():
+    """返回 True 表示两个 claim 都成功且传感器都存在。"""
+    conn, proxy = make_claim()
+    props = has_props(proxy)
+    ok = True
+    for method, prop in (('ClaimLight', 'HasAmbientLight'),
+                         ('ClaimAccelerometer', 'HasAccelerometer')):
+        if not props.get(prop):
+            ok = False
+            continue
+        try:
+            proxy.call_sync(method, None, Gio.DBusCallFlags.NONE, 3000, None)
+        except Exception as error:
+            print('tb-als-claim: %s 失败: %s' % (method, error), flush=True)
+            ok = False
+    if ok:
+        state.update(conn=conn, proxy=proxy, done=True)
+        print('tb-als-claim: light+accelerometer claimed (attempt %d)'
+              % state['attempts'], flush=True)
+        return True
+    print('tb-als-claim: sensors not ready (light=%s accel=%s)'
+          % (props.get('HasAmbientLight'), props.get('HasAccelerometer')),
+          flush=True)
+    try:
+        conn.close_sync(None)
+    except Exception:
+        pass
+    return False
+
+
+def tick():
+    if state['done']:
+        return GLib.SOURCE_CONTINUE
+
+    state['attempts'] += 1
+    try:
+        if claim_round():
+            return GLib.SOURCE_REMOVE
+    except Exception as error:
+        print('tb-als-claim: claim failed: %s' % error, flush=True)
+
+    if state['attempts'] >= MAX_ATTEMPTS:
+        print('tb-als-claim: giving up after %d attempts' % state['attempts'],
+              flush=True)
+        return GLib.SOURCE_REMOVE
+
+    GLib.timeout_add_seconds(RETRY_S, tick)
+    return GLib.SOURCE_REMOVE
+
+
+def on_appeared(connection, name, owner):
+    print('tb-als-claim: %s appeared (%s)' % (name, owner), flush=True)
+    drop_claim()
+    state['attempts'] = 0
+    GLib.timeout_add_seconds(FIRST_DELAY_S, tick)
+
+
+def on_vanished(connection, name):
+    print('tb-als-claim: %s vanished' % name, flush=True)
+    drop_claim()
+
+
+def main():
+    # name watch 在服务已经存在时会立刻回调 appeared，之后再出现的回调负责
+    # 重新 claim（iio-sensor-proxy 重启后 claim 全部失效）。
+    Gio.bus_watch_name(Gio.BusType.SYSTEM, NAME,
+                       Gio.BusNameWatcherFlags.NONE,
+                       on_appeared, on_vanished)
+    loop = GLib.MainLoop()
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

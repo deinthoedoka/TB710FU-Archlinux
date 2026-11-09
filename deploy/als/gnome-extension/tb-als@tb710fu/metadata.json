@@ -1,0 +1,7 @@
+{
+  "uuid": "tb-als@tb710fu",
+  "name": "TB710FU 自动亮度",
+  "description": "按环境光平滑调节屏幕亮度，手动拨亮度后自动学习偏好。开关沿用「设置 → 电源 → 节能 → 自动屏幕亮度」。",
+  "shell-version": ["51"],
+  "version": 1
+}

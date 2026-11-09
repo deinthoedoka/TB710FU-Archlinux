@@ -1,0 +1,14 @@
+[Unit]
+Description=Hold the ambient light + accelerometer claims (TB710FU)
+After=iio-sensor-proxy.service
+Wants=iio-sensor-proxy.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tb-als-claim
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

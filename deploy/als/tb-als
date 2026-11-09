@@ -1,11 +1,15 @@
 #!/bin/bash
-# 自动亮度开关：tb-als [on|off|toggle|status|reset-profile]
+# 自动亮度开关（GNOME）：tb-als [on|off|toggle|status|reset-profile]
+#
+# 开关本体是「设置 → 电源 → 节能 → 自动屏幕亮度」对应的
+# org.gnome.settings-daemon.plugins.power:ambient-enabled。
+# 真正的调节逻辑在 shell 扩展 tb-als@tb710fu 里。
 set -u
 
-unit=tb-als.service
-status_file="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tb-als.status"
-flag_file=/home/alarm/.config/tb-als-enabled
-profile_file=/home/alarm/.config/tb-als-profile.json
+schema=org.gnome.settings-daemon.plugins.power
+key=ambient-enabled
+profile_file="$HOME/.config/tb-als-profile.json"
+backlight=/sys/class/backlight/sy7758-backlight
 
 notify() {
     if command -v notify-send >/dev/null 2>&1; then
@@ -13,66 +17,48 @@ notify() {
     fi
 }
 
+current() {
+    gsettings get "$schema" "$key" 2>/dev/null
+}
+
 case "${1:-status}" in
 on|off|toggle)
-    state=$(systemctl --user is-enabled "$unit" 2>/dev/null || true)
+    state=$(current)
     action=$1
     if [ "$action" = toggle ]; then
-        if [ "$state" = enabled ]; then
-            action=off
-        else
-            action=on
-        fi
+        if [ "$state" = "true" ]; then action=off; else action=on; fi
     fi
     if [ "$action" = on ]; then
-        if systemctl --user enable --now "$unit" >/dev/null 2>&1; then
-            printf '1\n' > "$flag_file" 2>/dev/null || true
-            notify "自动亮度已开启" "屏幕亮度将随环境光自动调节"
-            echo "自动亮度已开启"
-        else
-            echo "自动亮度开启失败" >&2
-            exit 1
-        fi
+        gsettings set "$schema" "$key" true || { echo "自动亮度开启失败" >&2; exit 1; }
+        notify "自动亮度已开启" "屏幕亮度将随环境光自动调节"
+        echo "自动亮度已开启"
     else
-        systemctl --user disable --now "$unit" >/dev/null 2>&1
-        printf '0\n' > "$flag_file" 2>/dev/null || true
+        gsettings set "$schema" "$key" false || { echo "自动亮度关闭失败" >&2; exit 1; }
         notify "自动亮度已关闭" "保持当前亮度"
         echo "自动亮度已关闭"
     fi
     ;;
 status)
-    enabled=$(systemctl --user is-enabled "$unit" 2>/dev/null || true)
-    active=$(systemctl --user is-active "$unit" 2>/dev/null || true)
-    if [ "$enabled" = enabled ] && [ "$active" = active ]; then
+    if [ "$(current)" = "true" ]; then
         echo "自动亮度：已开启"
     else
-        echo "自动亮度：已关闭（enabled=$enabled active=$active）"
+        echo "自动亮度：已关闭"
     fi
     lux=$(busctl --system get-property net.hadess.SensorProxy \
         /net/hadess/SensorProxy net.hadess.SensorProxy LightLevel 2>/dev/null \
         | awk '{print $2}')
     [ -n "$lux" ] && echo "当前光照：${lux} lux"
-    if [ -f "$status_file" ]; then
-        value=$(awk -F= '$1=="brightness"{print $2}' "$status_file")
-        [ -n "$value" ] && echo "自动亮度值：$((value / 100))%"
-        offset=$(awk -F= '$1=="offset"{printf "%+.1f", $2/100}' "$status_file")
-        [ -n "$offset" ] && echo "学习偏移：${offset}%"
+    value=$(cat "$backlight/brightness" 2>/dev/null)
+    maximum=$(cat "$backlight/max_brightness" 2>/dev/null)
+    if [ -n "$value" ] && [ -n "$maximum" ]; then
+        echo "当前亮度：$((value * 100 / maximum))%"
     fi
-    current=$(busctl --user call org.kde.Solid.PowerManagement \
-        /org/kde/Solid/PowerManagement/Actions/BrightnessControl \
-        org.kde.Solid.PowerManagement.Actions.BrightnessControl brightness 2>/dev/null \
-        | awk '{print $2}')
-    [ -n "$current" ] && echo "当前亮度：$((current / 100))%"
-    if [ -f "$profile_file" ]; then
-        echo "亮度学习：已记录（tb-als reset-profile 可清除）"
-    fi
-    true
+    [ -f "$profile_file" ] && echo "亮度学习：已记录（tb-als reset-profile 可清除）"
     ;;
 reset-profile|reset)
     rm -f "$profile_file"
-    systemctl --user restart "$unit" >/dev/null 2>&1 || true
     notify "亮度学习已重置" "自动亮度回到默认曲线"
-    echo "亮度学习已重置"
+    echo "亮度学习已重置（下一次调节生效）"
     ;;
 *)
     echo "用法: tb-als [on|off|toggle|status|reset-profile]" >&2
