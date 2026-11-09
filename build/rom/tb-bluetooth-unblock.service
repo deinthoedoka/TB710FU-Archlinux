@@ -1,0 +1,16 @@
+[Unit]
+Description=Unblock the TB710FU Bluetooth radio at boot
+# systemd-rfkill restores the saved soft-block state early; a stale "blocked"
+# state (for example from a stray `rfkill block bluetooth`) otherwise survives
+# reboots and makes BlueZ report "Failed to set mode" with no way to recover
+# from the shell, which only drives Adapter1.Powered.
+After=systemd-rfkill.service bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rfkill unblock bluetooth
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

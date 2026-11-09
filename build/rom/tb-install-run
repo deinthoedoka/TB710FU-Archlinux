@@ -1,0 +1,257 @@
+#!/bin/bash
+# TB710FU automated UFS installer.
+#
+# Runs from the clean Arch root that the initramfs mounted over NBD (USB Ethernet).
+# The boot image cmdline carries tb710fu.install=dual|single; the matching systemd
+# unit starts this script before the desktop.
+#
+# It only touches:
+#   * the `userdata` GPT entry (shrink, dual) or its name (single)
+#   * a new/renamed `arch` partition
+#   * `metadata` head (dual: makes ZUXOS reformat it)
+#   * boot_a (writes the final boot image, sha256 read-back)
+#   * misc (one-shot BCB `bootonce-bootloader`, so the host gets a completion signal)
+#
+# It never writes persist/modemst/fsg/fsc/devinfo/frp/keystore/ssd/secdata/
+# uefivarstore/super/vbmeta*/dtbo/init_boot/vendor_boot.
+set -euo pipefail
+
+MODE=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^tb710fu\.install=//p' | head -1)
+[ -n "$MODE" ] || { echo "tb-install: no tb710fu.install= on cmdline"; exit 0; }
+case "$MODE" in dual|single) ;; *) echo "tb-install: bad mode '$MODE'"; exit 2;; esac
+
+LOG=/var/log/tb-install.log
+mkdir -p /var/log 2>/dev/null || true
+# tee to the service's tty and to the live root (the host can read it
+# afterwards). If that root is not writable, keep the tty output only —
+# a broken tee would kill every later echo through SIGPIPE.
+if touch "$LOG" 2>/dev/null; then
+  exec > >(tee -a "$LOG") 2>&1
+fi
+
+echo "=============================================================="
+echo " TB710FU installer: mode=$MODE  $(date -Is)"
+echo " kernel: $(uname -r)   cmdline: $(cat /proc/cmdline)"
+echo "=============================================================="
+
+fail() {
+  echo
+  echo "!! INSTALL FAILED: $*"
+  echo "!! Nothing further was written. The device is still running the NBD root."
+  echo "!! The host NBD server can be stopped and the log read from the image."
+  sleep infinity
+}
+trap 'fail "command failed at line $LINENO"' ERR
+
+partdev() {
+  local want=$1 b
+  for b in /sys/class/block/sd*; do
+    [ -r "$b/uevent" ] || continue
+    grep -q "^PARTNAME=$want$" "$b/uevent" 2>/dev/null && {
+      echo "/dev/$(basename "$b")"; return 0; }
+  done
+  return 1
+}
+
+# Write the pre-change GPT into the (possibly RAM-backed) live root, falling
+# back to /run when /root is not writable. The file is copied into the new
+# root later, so a temporary location is fine.
+GPT_BACKUP=""
+backup_gpt() {
+  local stamp base
+  stamp=$(date +%Y%m%d-%H%M%S)
+  mkdir -p /root 2>/dev/null || true
+  base=/root/gpt-sda-before-arch-$stamp.gpt
+  if ! sgdisk -b "$base" "$DATA" 2>/dev/null; then
+    base=/run/gpt-sda-before-arch-$stamp.gpt
+    sgdisk -b "$base" "$DATA" || fail "GPT backup failed"
+  fi
+  GPT_BACKUP=$base
+  echo "GPT backup: $GPT_BACKUP  sha256 $(sha256sum "$GPT_BACKUP" | cut -d' ' -f1)"
+}
+
+# A first install has `userdata`; a device that already ran this package in
+# single mode has `arch` instead, because userdata was renamed. Both layouts
+# are accepted so a reinstall needs no manual partition surgery.
+ARCH=$(partdev arch || true)
+UD=$(partdev userdata || true)
+if [ -n "$UD" ]; then
+  DATA=/dev/$(basename "$UD" | sed 's/[0-9]\+$//')
+  UDI=$(basename "$UD" | sed 's/^[a-z]*//')
+elif [ -n "$ARCH" ]; then
+  DATA=/dev/$(basename "$ARCH" | sed 's/[0-9]\+$//')
+  UDI=""
+else
+  fail "no userdata or arch partition found"
+fi
+SECTOR=$(blockdev --getss "$DATA")
+[ "$SECTOR" = 4096 ] || fail "unexpected sector size $SECTOR on $DATA"
+echo "userdata=${UD:-none}  arch=${ARCH:-none}  disk=$DATA  sector=$SECTOR"
+
+if [ -n "$UD" ]; then
+  UD_FIRST=$(sgdisk -i "$UDI" "$DATA" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+  UD_LAST=$(sgdisk -i "$UDI" "$DATA" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
+  [ -n "${UD_FIRST:-}" ] && [ -n "${UD_LAST:-}" ] || fail "cannot read userdata sectors"
+  # Some sgdisk builds omit this line; A03A (Android userdata) is the stock type.
+  UD_TYPE=$(sgdisk -i "$UDI" "$DATA" | sed -n 's/^Partition type GUID: //p')
+  [ -n "$UD_TYPE" ] || UD_TYPE=1B81E7E6-F50D-419B-A739-2AEEF8DA3335
+  UD_GUID=$(sgdisk -i "$UDI" "$DATA" | sed -n 's/^Partition unique GUID: //p')
+  [ -n "$UD_GUID" ] || fail "cannot read userdata unique GUID"
+  echo "userdata sectors: $UD_FIRST..$UD_LAST  type=$UD_TYPE  guid=$UD_GUID"
+fi
+
+if [ "$MODE" = dual ]; then
+  [ -n "$UD" ] || fail "dual install needs the stock userdata partition"
+  [ -z "$ARCH" ] || fail "an 'arch' partition already exists ($ARCH); this package is for a first install"
+
+  MIN_ANDROID_GB=${MIN_ANDROID_GB:-40}
+  # The 8+128, 8+256 and 12+512 boards share this GPT layout but not the
+  # userdata extent, so size the Arch partition from the real partition
+  # instead of assuming a 256 GB device.  Android keeps at least
+  # MIN_ANDROID_GB (40 GiB); Arch takes the rest — no upper cap, so big
+  # boards are not left with half their storage unused.
+  UD_GIB=$(( (UD_LAST - UD_FIRST + 1) * SECTOR / 1024 / 1024 / 1024 ))
+  DEFAULT_ARCH_GB=$((UD_GIB - MIN_ANDROID_GB))
+  ARCH_GB=${ARCH_GB:-$DEFAULT_ARCH_GB}
+  ARCH_SECTORS=$((ARCH_GB * 1024 * 1024 * 1024 / SECTOR))
+  MIN_START=$((UD_FIRST + MIN_ANDROID_GB * 1024 * 1024 * 1024 / SECTOR))
+  ARCH_START=$((UD_LAST - ARCH_SECTORS + 1))
+  # 2048 sectors = 8 MiB alignment, same as the original layout.
+  ARCH_START=$(( (ARCH_START + 2047) / 2048 * 2048 ))
+  if [ "$ARCH_START" -lt "$MIN_START" ]; then
+    ARCH_START=$(( (MIN_START + 2047) / 2048 * 2048 ))
+  fi
+  [ "$ARCH_START" -lt "$UD_LAST" ] || fail "no room for an arch partition"
+  REAL_GB=$(( (UD_LAST - ARCH_START + 1) * SECTOR / 1024 / 1024 / 1024 ))
+  [ "$REAL_GB" -ge 32 ] || fail "arch partition would be only ${REAL_GB} GiB"
+  echo "userdata extent: ${UD_GIB} GiB (${UD_FIRST}..${UD_LAST})"
+  echo "planned arch: sectors $ARCH_START..$UD_LAST (${REAL_GB} GiB); userdata ends at $((ARCH_START-1))"
+  echo "ZUXOS keeps $(( (ARCH_START - UD_FIRST) * SECTOR / 1024 / 1024 / 1024 )) GiB of userdata"
+
+  backup_gpt
+
+  sgdisk -d "$UDI" \
+    -n "$UDI:$UD_FIRST:$((ARCH_START-1))" -c "$UDI:userdata" \
+    -t "$UDI:$UD_TYPE" -u "$UDI:$UD_GUID" \
+    -n "0:$ARCH_START:$UD_LAST" "$DATA" || fail "sgdisk failed"
+  NEWNUM=$(sgdisk -p "$DATA" |
+    awk -v s="$ARCH_START" '$1 ~ /^[0-9]+$/ && $2 == s {print $1; exit}')
+  [ -n "$NEWNUM" ] || fail "cannot find the new partition number"
+  sgdisk -c "$NEWNUM:arch" -t "$NEWNUM:8300" "$DATA" || fail "cannot name the new partition"
+  echo "new partition: $NEWNUM (arch, 8300)"
+elif [ "$MODE" = single ]; then
+  if [ -n "$ARCH" ]; then
+    TARGET=$ARCH
+    echo "reinstalling onto the existing arch partition $TARGET"
+    # A device that already ran the partitioned layout keeps every byte
+    # behind 'arch' unused. Grow the partition through the end of the
+    # usable area with the same delete+recreate trick as the rename path:
+    # sgdisk refuses to create a partition that would overlap another one,
+    # so on refusal the original extent is restored unchanged. The content
+    # is wiped right after by mkfs anyway.
+    AN=$(basename "$TARGET" | sed 's/^[a-z]*//')
+    AFIRST=$(sgdisk -i "$AN" "$DATA" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+    ALAST=$(sgdisk -i "$AN" "$DATA" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
+    AGUID=$(sgdisk -i "$AN" "$DATA" | sed -n 's/^Partition unique GUID: //p')
+    [ -n "$AFIRST" ] && [ -n "$ALAST" ] && [ -n "$AGUID" ] || fail "cannot read arch partition geometry"
+    backup_gpt
+    echo "arch was sectors $AFIRST..$ALAST"
+    # The name must be re-applied: -n rebuilds the entry and drops it.
+    if sgdisk -d "$AN" -n "$AN:$AFIRST:0" -c "$AN:arch" -t "$AN:8300" -u "$AN:$AGUID" "$DATA"; then
+      echo "extended arch through the end of the usable area"
+    else
+      echo "extend refused; keeping the original arch extent"
+      sgdisk -d "$AN" -n "$AN:$AFIRST:$ALAST" -c "$AN:arch" -t "$AN:8300" -u "$AN:$AGUID" "$DATA" || fail "cannot restore arch partition"
+    fi
+  elif [ -n "$UD" ]; then
+    backup_gpt
+    # Recreate the partition with a default (maximum) end so Arch also gets
+    # any unallocated tail — a device that previously ran the dual layout
+    # carries tens of GiB of free space behind its shrunk userdata. sgdisk
+    # refuses to create a partition that would overlap another one, so on a
+    # layout with a partition after userdata this simply fails and the next
+    # command restores the original extent; nothing outside userdata moves.
+    if sgdisk -d "$UDI" -n "$UDI:$UD_FIRST:0" -c "$UDI:arch" \
+        -t "$UDI:8300" -u "$UDI:$UD_GUID" "$DATA"; then
+      echo "extended userdata -> arch through the end of the usable area"
+    else
+      echo "extend refused; keeping the original userdata extent"
+      sgdisk -d "$UDI" -n "$UDI:$UD_FIRST:$UD_LAST" -c "$UDI:arch" \
+        -t "$UDI:8300" -u "$UDI:$UD_GUID" "$DATA" || fail "cannot rename userdata to arch"
+    fi
+    echo "renamed userdata -> arch; GPT backup: $GPT_BACKUP"
+    TARGET=""
+  else
+    fail "no userdata or arch partition found"
+  fi
+fi
+
+partprobe "$DATA" 2>/dev/null || true
+TARGET=""
+for i in $(seq 1 40); do
+  TARGET=$(partdev arch || true)
+  [ -n "$TARGET" ] && [ -b "$TARGET" ] && break
+  # -u refreshes the size of partitions that already exist (the resize path);
+  # -a adds genuinely new ones (the dual path); rereadpt covers the rest.
+  partx -u "$DATA" 2>/dev/null || true
+  partx -a "$DATA" 2>/dev/null || true
+  blockdev --rereadpt "$DATA" 2>/dev/null || true
+  sleep 1
+done
+[ -n "${TARGET:-}" ] && [ -b "$TARGET" ] || fail "no 'arch' partition after rescan"
+echo "target: $TARGET"
+
+if [ "$MODE" = dual ]; then
+  echo "zeroing userdata/metadata heads so ZUXOS factory-resets on its next boot"
+  dd if=/dev/zero of="$UD" bs=1M count=64 conv=fsync status=none
+  MD=$(partdev metadata || true)
+  [ -n "$MD" ] && dd if=/dev/zero of="$MD" bs=1M count=64 conv=fsync status=none || true
+fi
+
+echo "mkfs.ext4 -L arch-root $TARGET"
+mkfs.ext4 -q -F -L arch-root "$TARGET"
+mkdir -p /mnt/target
+mount -o noatime "$TARGET" /mnt/target
+
+echo "copying the clean rootfs (this takes a few minutes) ..."
+rsync -aHAXx --numeric-ids --stats \
+  --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run \
+  --exclude=/tmp --exclude=/mnt --exclude=/media --exclude=/var/tmp \
+  --exclude=/var/cache --exclude=/var/log \
+  --exclude=/etc/machine-id --exclude=/etc/ssh/ssh_host_\* \
+  --exclude=/var/lib/systemd/random-seed \
+  / /mnt/target/
+mkdir -p /mnt/target/{proc,sys,dev,run,tmp,boot,mnt,home,var/log,var/cache,var/tmp}
+chmod 1777 /mnt/target/tmp
+if [ -f "${GPT_BACKUP:-}" ]; then
+  install -m 600 "$GPT_BACKUP" /mnt/target/root/
+fi
+sync
+
+case "$MODE" in
+  dual)   IMG=/boot/tbboot/boot_arch.img ;;
+  single) IMG=/boot/tbboot/boot_single.img ;;
+esac
+[ -f "$IMG" ] || fail "missing $IMG"
+[ -f "$IMG.sha256" ] || fail "missing $IMG.sha256"
+(cd "$(dirname "$IMG")" && sha256sum -c "$(basename "$IMG").sha256") || fail "boot image digest mismatch"
+WANT=$(cut -d' ' -f1 "$IMG.sha256")
+BOOT=$(partdev boot_a) || fail "no boot_a partition"
+SIZE=$(stat -c%s "$IMG")
+echo "writing $IMG ($SIZE bytes) -> $BOOT"
+dd if="$IMG" of="$BOOT" bs=4M conv=fsync status=none
+GOT=$(dd if="$BOOT" bs=4M count=$((SIZE / 4194304)) status=none | sha256sum | cut -d' ' -f1)
+[ "$GOT" = "$WANT" ] || fail "boot_a read-back mismatch ($GOT != $WANT)"
+echo "boot_a verified: $GOT"
+
+MISC=$(partdev misc) || fail "no misc partition"
+dd if=/dev/zero of="$MISC" bs=1 count=32 conv=notrunc status=none
+printf 'bootonce-bootloader' | dd of="$MISC" bs=1 conv=notrunc status=none
+sync
+umount /mnt/target
+sync
+echo
+echo "INSTALL-OK  $(date -Is)"
+echo "rebooting to the bootloader; the host will finish with 'fastboot reboot'"
+sync
+reboot -f

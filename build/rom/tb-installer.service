@@ -1,0 +1,20 @@
+[Unit]
+Description=TB710FU automated UFS installer (NBD root)
+ConditionKernelCommandLine=|tb710fu.install=dual
+ConditionKernelCommandLine=|tb710fu.install=single
+DefaultDependencies=no
+After=systemd-udevd.service systemd-remount-fs.service
+Before=sysinit.target display-manager.service
+Conflicts=shutdown.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tb-install-run
+TimeoutStartSec=0
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty0
+TTYReset=yes
+TTYVHangup=no
+TTYVTDisallocate=no
+[Install]
+WantedBy=sysinit.target

@@ -22,6 +22,15 @@
 __pycache__/
 *.pyc
 
+# compiled artifacts: sources are committed, binaries ship as release assets
+deploy/r26-compositor/deniald
+deploy/power-key/test/uinput-key
+deploy/refresh-mode/test/test_refreshcap
+
+# runtime / editor leftovers
+nbd-server.pid
+*.bak-size
+
 # personal / device-specific
 *.gpt
 *.key

@@ -1,0 +1,17 @@
+[Unit]
+Description=Unblock the TB710FU Wi-Fi and Bluetooth radios at boot
+# systemd-rfkill persisted soft-block state and re-applied it whenever any
+# process opened /dev/rfkill. A stale "WLAN blocked" entry then killed a live
+# Wi-Fi link mid-session (NetworkManager: "Wi-Fi now disabled by radio
+# killswitch"). The unit/socket are masked in the image; this service makes
+# the intended state explicit at every boot.
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rfkill unblock wifi bluetooth
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

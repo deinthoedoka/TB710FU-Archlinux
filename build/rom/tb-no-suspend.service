@@ -1,0 +1,17 @@
+[Unit]
+Description=Keep the TB710FU awake (its s2idle resume can leave UFS dead)
+After=systemd-user-sessions.service
+ConditionPathExists=!/etc/tb-allow-suspend
+
+[Service]
+Type=simple
+# A logind sleep inhibitor makes every suspend/hibernate request fail with
+# "Operation inhibited" instead of entering a state this board cannot leave.
+# Remove /etc/systemd/system/tb-no-suspend.service (or mask it) and run
+# `systemctl daemon-reload` if a future kernel fixes s2idle resume.
+ExecStart=/usr/bin/systemd-inhibit --what=sleep --who=TB710FU --why="s2idle resume is unreliable on this board (UFS controller)" --mode=block /usr/bin/sleep infinity
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
