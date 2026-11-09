@@ -12,7 +12,7 @@ This daemon reads the raw pmic_pwrkey evdev node (the shell's accelerator grab
 is compositor-level, the evdev stream stays readable) and gives long presses a
 software meaning:
 
-* short press  -> wake when the panel is dark (deniald's DPMS toggle lights
+* short press  -> wake when the panel is dark (the DPMS wake lights
                   it; suspending here would black it out again at once), else
                   suspend through org.gnome.SessionManager (same as before)
 * long press   -> ask the tb-power-menu shell extension to show a touch menu
@@ -228,8 +228,8 @@ class PowerKey:
             return
         self._last_action = time.monotonic()
         if self._screen_dark():
-            # A press on a dark screen belongs to the wake: deniald lights
-            # the panel, and suspending here would black it out again at
+            # A press on a dark screen belongs to the wake: the DPMS wake
+            # lights the panel, and suspending here would black it out again at
             # once (the screen-off model on this tablet is DPMS, not sleep).
             log("short press while dark: wake press, not suspending")
             return
