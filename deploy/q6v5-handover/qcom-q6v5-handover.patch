@@ -1,0 +1,35 @@
+--- a/drivers/remoteproc/qcom_q6v5.c	2026-09-14 19:41:11.000000000 +0800
++++ b/drivers/remoteproc/qcom_q6v5.c	2026-11-08 22:26:24.486840532 +0800
+@@ -78,7 +78,11 @@
+  */
+ int qcom_q6v5_unprepare(struct qcom_q6v5 *q6v5)
+ {
+-	disable_irq(q6v5->handover_irq);
++	/* The handover interrupt disables itself once signaled (vendor
++	 * firmware keeps toggling the line afterwards); skip the extra
++	 * disable in that case so prepare()'s enable stays balanced. */
++	if (!q6v5->handover_issued)
++		disable_irq(q6v5->handover_irq);
+ 	q6v5_load_state_toggle(q6v5, false);
+ 
+ 	/* Disable interconnect vote, in case handover never happened */
+@@ -164,10 +168,16 @@
+ {
+ 	struct qcom_q6v5 *q6v5 = data;
+ 
+-	if (q6v5->handover_issued) {
+-		dev_err(q6v5->dev, "Handover signaled, but it already happened\n");
++	/* One edge per prepare() cycle is all we can act on: the vendor ADSP
++	 * firmware keeps re-signaling this smp2p line (~5/s) long after the
++	 * first handover, which used to storm this handler with
++	 * "Handover signaled, but it already happened".  prepare() pairs
++	 * with the single disable below; unprepare() skips its own disable
++	 * when the flag is set, so the enable/disable ledger stays level. */
++	disable_irq_nosync(irq);
++
++	if (q6v5->handover_issued)
+ 		return IRQ_HANDLED;
+-	}
+ 
+ 	if (q6v5->handover)
+ 		q6v5->handover(q6v5);

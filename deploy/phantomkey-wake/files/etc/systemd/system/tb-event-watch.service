@@ -1,0 +1,12 @@
+[Unit]
+Description=TB710FU phantom-key / wake-source watcher (event-watch)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tb-event-watch.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,3 @@
+# GPIO66 cover is handled at runtime by tb-cover-daemon (no wake needed);
+# Volume-Up phantom bursts were waking the device out of s2idle (IRQ161).
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="gpio-keys", ATTR{power/wakeup}="disabled"
